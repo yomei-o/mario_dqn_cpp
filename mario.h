@@ -16,15 +16,20 @@ enum { A_RIGHT, A_RIGHT_A, A_RIGHT_B, A_RIGHT_AB, A_A, N_ACTIONS };
 
 class Env {
 public:
-    // Terrain window sampled ahead of Mario from SMB's background tile RAM.
-    static constexpr int TILE_COLS = 6;      // columns from Mario's column, going right
-    static constexpr int TILE_ROWS = 3;      // rows at/below Mario's feet (feet/ground/below)
+    // Terrain occupancy grid sampled ahead of Mario from SMB's background tile
+    // RAM. Rows are FIXED screen rows (NOT relative to Mario), so the grid stays
+    // meaningful mid-jump: the agent keeps seeing the pit/pipe/ground profile
+    // ahead even while airborne (its own height is obs[1], its speed obs[2]).
+    static constexpr int TILE_COLS = 10;     // columns from Mario's, going right (~160px lookahead)
+    static constexpr int TILE_ROW0 = 6;      // topmost screen row sampled (row 0..12 playfield)
+    static constexpr int TILE_ROWS = 7;      // rows 6..12: covers the tallest pipe down to ground
     static constexpr int TILE_N = TILE_COLS * TILE_ROWS;
-    // obs layout: [0..3] mario pos/vel/state, [4..18] 5 enemy slots, [19..] tile window
+    // obs layout: [0..3] mario pos/vel/state, [4..18] 5 enemy slots, [19..] tile grid
     static constexpr int STATE_DIM = 19 + TILE_N;
     static constexpr int FRAME_SKIP = 4;
     static constexpr int MAX_STEPS = 1200;   // ~ episode time limit (env steps)
-    static constexpr int STALL_LIMIT = 60;   // end episode after this many stalled steps
+    static constexpr int STALL_LIMIT = 90;   // end episode after this many stalled steps
+                                             // (roomy enough to attempt a pipe jump)
 
     bool init(const char* rom_path);         // read ROM bytes once
     const std::vector<float>& reset();        // reboot + start 1-1; returns obs

@@ -139,16 +139,17 @@ void Env::build_obs() {
         obs_[4 + i * 3 + 1] = active ? std::max(-1.f, std::min(1.f, rel_x / 128.f)) : 0.f;
         obs_[4 + i * 3 + 2] = active ? std::max(-1.f, std::min(1.f, (ey - py) / 128.f)) : 0.f;
     }
-    // Terrain window: TILE_COLS columns starting at Mario's, going right, and
-    // TILE_ROWS rows at and below Mario's feet (r+1: feet, ground, below-ground).
-    // 1 = solid, 0 = passable. On flat ground a column reads ".##"; a pit reads
-    // "..." (hole -> jump); a pipe/step reads "###" (obstacle -> jump). This is
-    // how the agent "sees" the two 1-1 pits and the pipes.
+    // Terrain occupancy grid: TILE_COLS columns starting at Mario's and going
+    // right, sampled at FIXED screen rows TILE_ROW0..TILE_ROW0+TILE_ROWS-1.
+    // 1 = solid, 0 = passable. Reading a column top->bottom gives the vertical
+    // profile ahead: flat ground = "00000 11", a pit = all zeros (jump the gap),
+    // a pipe = solid cells stacking up from the ground (jump the obstacle). Using
+    // fixed rows (vs Mario-relative) keeps the ground/landing visible mid-jump.
     int base = 19;
     for (int c = 0; c < TILE_COLS; ++c) {
         int tx = lx + c * 16 + 8;                     // center of column c ahead
         for (int r = 0; r < TILE_ROWS; ++r) {
-            int ty = py + (r + 1) * 16 + 8;           // one tile below Mario's row and down
+            int ty = 32 + (TILE_ROW0 + r) * 16 + 8;   // center of fixed screen row
             obs_[base + c * TILE_ROWS + r] = tile_at(tx, ty) != 0 ? 1.f : 0.f;
         }
     }

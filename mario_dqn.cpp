@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
     const float gamma = 0.99f;
     const int batch = 32, warmup = 5000, target_sync = 2000, episodes = 12000;
     const int train_freq = 4;   // gradient step every N env steps (Atari-DQN style; ~Nx faster wall-clock)
-    const float eps_start = 1.0f, eps_end = 0.05f, eps_decay_steps = 200000.f;
+    const float eps_start = 1.0f, eps_end = 0.1f, eps_decay_steps = 250000.f;   // keep exploring pipe-jump timing
 
     QNet online(S, A, 256), target(S, A, 256), best(S, A, 256);
     target.copy_from(online); best.copy_from(online);
