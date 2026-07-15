@@ -29,6 +29,19 @@ static int greedy_action(QNet& net, const std::vector<float>& s) {
     return argmax_row(net.forward(x).data(), 0, net.adim);
 }
 
+// One fully-greedy rollout; returns the max level-x reached (honest skill metric).
+static int greedy_episode(QNet& net, mario::Env& env) {
+    std::vector<float> s = env.reset();
+    bool done = false; int mx = 0;
+    while (!done) {
+        int a = greedy_action(net, s);
+        env.step(a, done);
+        s = env.observation();
+        mx = std::max(mx, env.mario_x());
+    }
+    return mx;
+}
+
 static void clip_grads(std::vector<Tensor>& ps, float max_norm) {
     double sq = 0;
     for (auto& p : ps) for (float g : p.grad()) sq += (double)g * g;
@@ -81,7 +94,15 @@ static int envtest(const char* rom) {
     std::printf("after reset: x=%d\n", env.mario_x());
     for (int t = 0; t < 40; ++t) {
         bool done; float r = env.step(mario::A_RIGHT_B, done);   // run right
-        if (t % 5 == 0) std::printf("  step %2d: x=%d r=%.1f done=%d\n", t, env.mario_x(), r, done);
+        const auto& o = env.observation();
+        // obs[4..18] are the 5 enemy slots (active, rel_x, rel_y). Print any active one.
+        std::string en;
+        for (int i = 0; i < 5; ++i)
+            if (o[4 + i * 3] > 0.5f)
+                en += " enemy" + std::to_string(i) + "(dx=" + std::to_string(o[4+i*3+1]).substr(0,5) +
+                      ",dy=" + std::to_string(o[4+i*3+2]).substr(0,5) + ")";
+        std::printf("  step %2d: x=%d r=%.1f done=%d%s\n", t, env.mario_x(), r, done,
+                    en.empty() ? "" : en.c_str());
         if (done) { std::printf("  episode ended at step %d (x=%d)\n", t, env.mario_x()); break; }
     }
     return 0;
@@ -159,15 +180,17 @@ int main(int argc, char** argv) {
         recent_x.push_back(ep_max_x);
         if (recent_x.size() > 50) recent_x.pop_front();
         double avg_x = 0; for (int x : recent_x) avg_x += x; avg_x /= recent_x.size();
-        if (ep_max_x > best_x) { best_x = ep_max_x; best.copy_from(online); best.save("mario_best.bin"); }
 
-        if (ep % 10 == 0) {
+        // Checkpoint by GREEDY skill (not by exploration luck), like CartPole/Othello.
+        if (ep % 25 == 0 && (int)replay.size() >= warmup) {
+            int gx = greedy_episode(online, env);
+            if (gx > best_x) { best_x = gx; best.copy_from(online); best.save("mario_best.bin"); }
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
-            std::printf("ep %4d  ret %7.1f  max_x %4d  avg50_x %6.1f  best_x %4d  eps %.2f  steps %ld\n",
-                        ep, ep_ret, ep_max_x, avg_x, best_x, eps, total_steps);
+            std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  best_greedy %4d  eps %.2f  steps %ld\n",
+                        ep, ep_ret, ep_max_x, avg_x, gx, best_x, eps, total_steps);
             std::fflush(stdout);
         }
     }
-    std::printf("\nbest distance reached: x=%d (saved mario_best.bin)\n", best_x);
+    std::printf("\nbest greedy distance: x=%d (saved mario_best.bin)\n", best_x);
     return 0;
 }
