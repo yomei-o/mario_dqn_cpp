@@ -46,8 +46,16 @@ replay.h          経験リプレイ
 cartpole.h        Phase1環境 / main.cpp = CartPole学習
 nes.h/.cpp        ヘッドレスNES API（load_file/load_bytes/set_buttons/step_frame/pixels/ram）
 third_party/laines/  vendorしたLaiNESコア（de-GNU化済み、SDL/音源除去、mapper24削除）
-mario.h/.cpp      SMB 1-1 環境（RAM特徴量・行動・報酬・reset）/ mario_dqn.cpp = 学習
+mario.h/.cpp      SMB 1-1 環境（RAM特徴量・行動・報酬・reset）/ mario_dqn.cpp = 学習/録画
+web/index.html    録画(run.bin)をcanvasで再生するビューア
+web/serve.py      Python簡易HTTPサーバ / server.cpp = cpp-httplib版(third_party/httplib.h)
 ```
+
+## 結果をブラウザで見る（実装済み）
+
+`mario_dqn record ROM mario_best.bin web/run.bin` で greedy プレイを録画 → `python web/serve.py`
+または `server.exe` で配信 → ブラウザで `web/index.html`。**Phase4(WASMライブ)の前段**（今は
+「ネイティブ録画→ブラウザ再生」）。現状greedyはクリボー(x312)で力尽きる＝学習収束が先決。
 
 ## 次の一手（Phase 3 収束）
 
