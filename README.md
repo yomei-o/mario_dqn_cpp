@@ -77,6 +77,28 @@ cmake --build build --config Release --target nes_test
 build/Release/nes_test.exe "Super Mario Bros (JU) (PRG 0).nes"
 ```
 
+## 結果をブラウザで見る 🍄
+
+学習済みエージェントの1-1プレイを**録画→ブラウザ再生**できる（`web/`）。
+
+```powershell
+# 1) greedyプレイを録画（web/run.bin を生成。frame/agent-step の RGB列）
+build/Release/mario_dqn.exe record "Super Mario Bros (JU) (PRG 0).nes" mario_best.bin web/run.bin
+
+# 2) 簡易HTTPサーバを起動（どちらか）
+python web/serve.py           # Python版 -> http://localhost:8000
+build/Release/server.exe      # cpp-httplib版(単一ヘッダMIT) -> http://localhost:8080
+
+# 3) ブラウザで開くと canvas でプレイが再生される
+```
+
+`web/index.html` が `run.bin`（先頭に `MRUN`+nframes+w+h、以降 w*h*3 のRGBフレーム列）を
+fetchして canvas に再生。※現状は学習途上なので、greedyだと最初のクリボー(x=312)で力尽きる
+様子が見える。学習を収束させれば先まで進む録画になる（[`RESUME.md`](RESUME.md)）。
+
+これは最終ゴール **Phase 4（NES+DQNを丸ごとWASM化してブラウザで“ライブ”プレイ）** の前段。
+いまは「ネイティブで録画→ブラウザで再生」、Phase 4で「ブラウザ内でエミュ+推論をライブ実行」になる。
+
 ## スーパーマリオについて（Phase 3以降）
 
 - 環境は **本物のNESエミュレータ（LaiNES）** を組み込む（`gym-super-mario-bros` の中核と同じ系統）

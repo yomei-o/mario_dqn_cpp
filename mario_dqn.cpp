@@ -36,6 +36,44 @@ static void clip_grads(std::vector<Tensor>& ps, float max_norm) {
     if (norm > max_norm) { float s = max_norm / (norm + 1e-6f); for (auto& p : ps) for (float& g : p.grad()) g *= s; }
 }
 
+// Record a greedy episode of the trained agent to web/run.bin so the browser
+// viewer can play it back. Format: "MRUN", u32 nframes, u32 w, u32 h, then
+// nframes * w*h*3 bytes RGB (one NES frame per agent step).
+static int record(const char* rom, const char* weights, const char* out_path) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    QNet net(S, A, 256);
+    if (!net.load(weights)) std::printf("(warning) could not load %s; using random net\n", weights);
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    env.reset();
+
+    FILE* f = std::fopen(out_path, "wb");
+    if (!f) { std::printf("cannot open %s\n", out_path); return 1; }
+    uint32_t w = nes::WIDTH, h = nes::HEIGHT, nframes = 0;
+    std::fwrite("MRUN", 1, 4, f);
+    std::fwrite(&nframes, 4, 1, f); std::fwrite(&w, 4, 1, f); std::fwrite(&h, 4, 1, f);
+
+    std::vector<uint8_t> rgb(w * h * 3);
+    bool done = false;
+    for (int t = 0; t < 1200 && !done; ++t) {
+        int a = greedy_action(net, env.observation());
+        env.step(a, done);
+        const uint32_t* px = nes::pixels();
+        for (uint32_t i = 0; i < w * h; ++i) {
+            rgb[i * 3 + 0] = (px[i] >> 16) & 0xFF;
+            rgb[i * 3 + 1] = (px[i] >> 8) & 0xFF;
+            rgb[i * 3 + 2] = px[i] & 0xFF;
+        }
+        std::fwrite(rgb.data(), 1, rgb.size(), f);
+        ++nframes;
+    }
+    std::fseek(f, 4, SEEK_SET);           // patch nframes
+    std::fwrite(&nframes, 4, 1, f);
+    std::fclose(f);
+    std::printf("recorded %u frames (final x=%d) -> %s\n", nframes, env.mario_x(), out_path);
+    return 0;
+}
+
 static int envtest(const char* rom) {
     mario::Env env;
     if (!env.init(rom)) return 1;
@@ -52,6 +90,10 @@ static int envtest(const char* rom) {
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "envtest") == 0)
         return envtest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "record") == 0)
+        return record(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                      argc > 3 ? argv[3] : "mario_best.bin",
+                      argc > 4 ? argv[4] : "web/run.bin");
     const char* rom = argc > 1 ? argv[1] : "Super Mario Bros (JU) (PRG 0).nes";
 
     seed(0);

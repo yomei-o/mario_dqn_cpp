@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DQN plays Super Mario Bros 1-1</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #1a1a1a; color: #eee; display: flex; flex-direction: column;
+         align-items: center; gap: 14px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .sub { font-size: 13px; opacity: .7; margin: 0; text-align: center; }
+  canvas { image-rendering: pixelated; border: 2px solid #444; border-radius: 4px;
+           width: 512px; height: 480px; background: #000; }
+  .row { display: flex; gap: 12px; align-items: center; font-size: 14px; }
+  button { font-size: 14px; padding: 6px 14px; border-radius: 6px; border: 1px solid #555;
+           background: #333; color: #eee; cursor: pointer; }
+  button:hover { background: #444; }
+  #status { font-variant-numeric: tabular-nums; opacity: .8; }
+  input[type=range] { width: 260px; }
+</style>
+</head>
+<body>
+  <h1>🍄 DQN plays Super Mario Bros 1-1</h1>
+  <p class="sub">自作autograd + DQN が、本物のNESエミュ(LaiNES)で1-1をプレイした録画。<br>
+     C++でネイティブ学習 → フレームを録画 → このブラウザで再生（Phase 3, 学習途上）。</p>
+  <canvas id="screen" width="256" height="240"></canvas>
+  <div class="row">
+    <button id="play">⏸ Pause</button>
+    <button id="restart">⟳ Restart</button>
+    <label><input type="checkbox" id="loop" checked> loop</label>
+    <label>speed <input type="range" id="speed" min="4" max="60" value="20"></label>
+  </div>
+  <div id="status">loading run.bin …</div>
+
+<script>
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+let frames = [], W = 256, H = 240, cur = 0, playing = true, fps = 20, acc = 0, last = 0;
+
+fetch('run.bin').then(r => {
+  if (!r.ok) throw new Error('run.bin not found (run: mario_dqn record)');
+  return r.arrayBuffer();
+}).then(buf => {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'MRUN') throw new Error('bad file magic');
+  const n = dv.getUint32(4, true); W = dv.getUint32(8, true); H = dv.getUint32(12, true);
+  canvas.width = W; canvas.height = H;
+  const bytes = new Uint8Array(buf);
+  const frameSize = W * H * 3;
+  for (let f = 0; f < n; f++) {
+    const off = 16 + f * frameSize;
+    const img = ctx.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) {
+      img.data[i*4+0] = bytes[off + i*3+0];
+      img.data[i*4+1] = bytes[off + i*3+1];
+      img.data[i*4+2] = bytes[off + i*3+2];
+      img.data[i*4+3] = 255;
+    }
+    frames.push(img);
+  }
+  requestAnimationFrame(loop);
+}).catch(e => { statusEl.textContent = '⚠ ' + e.message; });
+
+function draw() {
+  if (frames.length) ctx.putImageData(frames[cur], 0, 0);
+  statusEl.textContent = `frame ${cur+1} / ${frames.length}`;
+}
+function loop(t) {
+  if (!last) last = t;
+  const dt = t - last; last = t;
+  if (playing && frames.length) {
+    acc += dt;
+    while (acc > 1000 / fps) {
+      acc -= 1000 / fps;
+      cur++;
+      if (cur >= frames.length) { cur = document.getElementById('loop').checked ? 0 : frames.length - 1; if (!document.getElementById('loop').checked) playing = false; }
+    }
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+document.getElementById('play').onclick = e => { playing = !playing; e.target.textContent = playing ? '⏸ Pause' : '▶ Play'; };
+document.getElementById('restart').onclick = () => { cur = 0; playing = true; document.getElementById('play').textContent = '⏸ Pause'; };
+document.getElementById('speed').oninput = e => { fps = +e.target.value; };
+</script>
+</body>
+</html>
