@@ -1,33 +1,46 @@
 #!/bin/bash
-# Parallel training: the NES core is a global singleton, so each training worker
-# needs its own process (= its own CPU core). We launch N workers with distinct
-# seeds and checkpoint paths (best-of-N), all warm-starting from the current
-# mario_best.bin, then pick the best resulting checkpoint.
+# Parallel training: the NES core is a global singleton, so each worker needs its
+# own process (= its own CPU core). We run a DIVERSE best-of-N sweep -- workers
+# span the preserve<->explore spectrum (gentle low-eps/low-lr keeps the warm-
+# started policy; aggressive high-eps explores past the frontier) -- all warm-
+# starting from mario_best.bin, then pick the winning checkpoint.
 #
-#   ./train_parallel.sh [N]      # N workers (default: CPU cores - 2)
+#   ./train_parallel.sh          # 8 preset workers (needs demo.bin + mario_best.bin)
 #
-# Requires: build/Release/mario_dqn.exe and demo.bin present.
+# Each worker i logs to train_i.log and saves mario_best_i.bin.
 set -u
 ROM="Super Mario Bros (JU) (PRG 0).nes"
 EXE="build/Release/mario_dqn.exe"
-CORES=$(nproc 2>/dev/null || echo 4)
-N=${1:-$(( CORES > 3 ? CORES - 2 : 2 ))}
 
-echo "launching $N parallel workers (cores=$CORES) ..."
+# worker configs: "seed eps lr curriculum_prob"  (preserve --> explore)
+CONFIGS=(
+  "0 0.05 5e-5 0.30"
+  "1 0.10 1e-4 0.40"
+  "2 0.10 5e-5 0.50"
+  "3 0.20 1e-4 0.50"
+  "4 0.20 1.5e-4 0.60"
+  "5 0.30 2e-4 0.60"
+  "6 0.30 2.5e-4 0.70"
+  "7 0.40 2e-4 0.70"
+)
+
+echo "launching ${#CONFIGS[@]} diverse workers ..."
 pids=()
-for i in $(seq 0 $((N-1))); do
-    "$EXE" "$ROM" "$i" "mario_best_$i.bin" > "train_$i.log" 2>&1 &
+for cfg in "${CONFIGS[@]}"; do
+    read -r seed eps lr cp <<< "$cfg"
+    "$EXE" "$ROM" "$seed" "mario_best_$seed.bin" "$eps" "$lr" "$cp" > "train_$seed.log" 2>&1 &
     pids+=($!)
-    echo "  worker $i -> mario_best_$i.bin (train_$i.log) pid $!"
+    echo "  worker $seed: eps=$eps lr=$lr cp=$cp -> mario_best_$seed.bin (train_$seed.log) pid $!"
 done
 
-echo "waiting for workers to finish (Ctrl+C to stop; checkpoints are saved as they improve) ..."
+echo "waiting (Ctrl+C to stop; checkpoints save as they improve) ..."
 for p in "${pids[@]}"; do wait "$p"; done
 
 echo "=== evaluating checkpoints ==="
 best_metric=-1; best_file=""
-for i in $(seq 0 $((N-1))); do
-    f="mario_best_$i.bin"
+for cfg in "${CONFIGS[@]}"; do
+    read -r seed _ <<< "$cfg"
+    f="mario_best_$seed.bin"
     [ -f "$f" ] || continue
     line=$("$EXE" eval "$ROM" "$f")
     echo "$line"

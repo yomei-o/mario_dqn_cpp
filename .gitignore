@@ -13,6 +13,9 @@ build/
 # NES ROMs are copyrighted -- keep them out of code commits (supply your own)
 *.nes
 
+# training logs
+*.log
+
 # python / editor
 __pycache__/
 *.pyc

@@ -301,9 +301,16 @@ int main(int argc, char** argv) {
     // Parallelism: launch N processes with distinct seeds and out paths (each
     // gets its own emulator on its own core -- the core is a global singleton, so
     // one process = one core), then pick the best checkpoint with `eval`.
+    // Usage: mario_dqn [ROM] [seed] [out.bin] [eps_start] [lr] [curriculum_prob]
+    // The optional hyperparameters let parallel workers span the preserve<->explore
+    // spectrum (gentle low-eps/low-lr keeps the warm-started policy; aggressive
+    // high-eps explores past the frontier); best-of-N keeps whichever wins.
     const char* rom = argc > 1 ? argv[1] : "Super Mario Bros (JU) (PRG 0).nes";
     int seed_val = argc > 2 ? std::atoi(argv[2]) : 0;
     std::string out_path = argc > 3 ? argv[3] : "mario_best.bin";
+    float arg_eps = argc > 4 ? (float)std::atof(argv[4]) : -1.f;
+    float arg_lr  = argc > 5 ? (float)std::atof(argv[5]) : -1.f;
+    float arg_cp  = argc > 6 ? (float)std::atof(argv[6]) : -1.f;
 
     seed(seed_val);
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
@@ -319,13 +326,16 @@ int main(int argc, char** argv) {
     mario::Env env;
     if (!env.init(rom)) return 1;
 
-    // Warm start: continue improving the current best net rather than relearning
-    // from scratch. With a good policy loaded, keep exploration modest so we
-    // refine (push past the frontier) instead of destroying it.
-    // Warm start from this worker's own checkpoint if present, else the shared base.
+    // Warm start from this worker's own checkpoint if present, else the shared
+    // base. A loaded policy is GOOD but its Q-values are calibrated to the old
+    // reward scale; with a new reward + high LR + high exploration the first
+    // updates destroyed it (greedy-from-start collapsed 2017 -> ~400). So fine
+    // -tune GENTLY: low LR + minimal exploration to adapt values without wrecking
+    // the policy. Fresh (no checkpoint) training keeps the aggressive schedule.
     bool warm = online.load_expand(out_path.c_str()) || online.load_expand("mario_best.bin");   // expands 89->90 dims
-    float eps_start = warm ? 0.3f : 1.0f;
-    float eps_decay_steps = warm ? 150000.f : 250000.f;
+    float eps_start = arg_eps >= 0.f ? arg_eps : (warm ? 0.1f : 1.0f);
+    float eps_decay_steps = warm ? 100000.f : 250000.f;
+    opt.lr = arg_lr > 0.f ? arg_lr : (warm ? 1.0e-4f : 2.5e-4f);
     target.copy_from(online); best.copy_from(online);
 
     // Curriculum: if a demonstration exists, precompute snapshots across the back
@@ -336,10 +346,15 @@ int main(int argc, char** argv) {
     if (have_demo) env.build_curriculum(16);
     int n_ckpt = env.num_checkpoints();
     bool curriculum = n_ckpt > 0;
-    const float curriculum_prob = 0.7f;
+    // Anneal the curriculum: start balanced (learn the hard frontier) and shift
+    // toward full-start runs so the whole level gets re-consolidated into one
+    // chainable policy (heavy curriculum alone made it forget the early game).
+    float cp_start = arg_cp >= 0.f ? arg_cp : 0.5f;
+    const float cp_end = 0.2f, cp_anneal = 150000.f;
 
     std::printf("== DQN x Super Mario Bros 1-1 (RAM features, real NES) ==\n");
-    std::printf("   seed=%d out=%s\n", seed_val, out_path.c_str());
+    std::printf("   seed=%d out=%s | eps_start=%.2f lr=%.1e cp_start=%.2f\n",
+                seed_val, out_path.c_str(), eps_start, opt.lr, cp_start);
     std::printf("   state_dim=%d actions=%d | batch=%d target_sync=%d | warm=%d curriculum=%d(demo=%d ckpts=%d)\n",
                 S, A, batch, target_sync, (int)warm, (int)curriculum, env.demo_len(), n_ckpt);
     if (curriculum)
@@ -356,8 +371,9 @@ int main(int argc, char** argv) {
     std::printf("   warm-start greedy x=%d score=%d\n", best_x, best_score);
 
     for (int ep = 1; ep <= episodes; ++ep) {
-        // Curriculum: most episodes start at a checkpoint near the frontier;
-        // the rest start from x=0 so the whole policy keeps getting practiced.
+        // Curriculum: a decreasing fraction of episodes start at a checkpoint near
+        // the frontier; the rest start from x=0 so the full policy stays practiced.
+        float curriculum_prob = cp_start - (cp_start - cp_end) * std::min(1.f, total_steps / cp_anneal);
         std::vector<float> s;
         if (curriculum && ag::randf() < curriculum_prob) {
             int k = (int)(ag::randf() * n_ckpt) % n_ckpt;
