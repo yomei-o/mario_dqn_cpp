@@ -1,0 +1,20 @@
+# build artifacts
+build/
+*.obj
+*.exe
+*.lib
+*.exp
+*.pdb
+
+# trained weights / checkpoints
+*.bin
+
+# NES ROMs are copyrighted -- keep them out of code commits (supply your own)
+*.nes
+
+# python / editor
+__pycache__/
+*.pyc
+.vs/
+.claude/
+*.user
