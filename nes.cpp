@@ -38,4 +38,15 @@ void step_frame() { CPU::run_frame(); }
 const uint32_t* pixels() { return g_framebuffer; }
 uint8_t ram(uint16_t addr) { return CPU::ram[addr & 0x7FF]; }
 
+void save_state(std::vector<uint8_t>& buf) {
+    buf.clear();
+    CPU::save_state(buf);
+    PPU::save_state(buf);
+}
+void load_state(const std::vector<uint8_t>& buf) {
+    const uint8_t* p = buf.data();
+    p = CPU::load_state(p);
+    p = PPU::load_state(p);
+}
+
 }  // namespace nes

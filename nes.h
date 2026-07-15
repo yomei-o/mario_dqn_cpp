@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 // Headless NES front-end around the vendored LaiNES core (BSD). Exposes a clean,
 // WASM-friendly, frame-driven API: load a ROM, inject controller buttons, step
 // one frame, then read the 256x240 framebuffer and the CPU RAM. No SDL, no audio,
@@ -23,5 +24,11 @@ void set_buttons(int player, uint8_t bits);  // player 0/1, OR of Button flags
 void step_frame();                            // advance exactly one video frame
 const uint32_t* pixels();                     // WIDTH*HEIGHT, LaiNES 0xXXRRGGBB
 uint8_t ram(uint16_t addr);                   // CPU RAM $0000-$07FF
+
+// Fast in-memory save/restore of the full emulator state (CPU + PPU; mapper0 is
+// immutable, APU is sound-only). Deterministic at frame boundaries: restoring a
+// snapshot reproduces the exact trajectory. Used for curriculum checkpoints.
+void save_state(std::vector<uint8_t>& buf);
+void load_state(const std::vector<uint8_t>& buf);
 
 }  // namespace nes

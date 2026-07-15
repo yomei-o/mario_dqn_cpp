@@ -31,15 +31,29 @@ CPUのみ（この環境ではGPU不可：M2 Mac→UTM→Windows、CUDA/Metal使
     4. **train_freq=4** — Atari-DQN流に4環境ステップごとに1勾配更新。NESエミュ(~57 step/s)が
        ボトルネックなので学習は本質的に長時間（20万stepで約1時間）。→ **バックグラウンドで長回し**。
     5. **探索確保** — eps下限 0.1、`eps_decay_steps`=25万（土管越えの連続A保持timingを見つけるため）。
-  診断ツール `tilescan` でタイル配置とマリオ位置をダンプ可能。envtestは観測の地形格子も表示。
+  診断ツール `tilescan`/`dettest`/`snaptest`/`scoretest` あり。envtestは観測の地形格子も表示。
   **経過(2026-07)**:
     - 相対3行窓(37次元)版 → greedy x=709（旧baseline 681更新）。ただし土管クラスター(x≈650〜900)で頭打ち。
     - **固定行占有格子(89次元)版 → greedy x=2017 に到達（1-1の約2/3, ゴール~3160）**。土管群・穴地帯を突破。
-      `mario_best.bin`=この89次元ネット。`record`で録り直した`web/run.bin`(299フレーム)で再生可能。
-  ⚠**評価ノイズの正体**: 学習中の `GREEDY_x` は 294〜709 と大きくばらつくが、これは学習ループ内で
-    多数エピソードを回した後の共有NESグローバル状態が `env.reset()` で完全初期化されないため。
-    **別プロセスの `record` で greedy を回すと x=2017 が6回とも完全再現**＝このネットの真の到達は x≈2017。
-    （次にやるなら nes::reset の完全初期化 or 学習中greedy評価を別状態で行う改善で、ログのノイズを解消できる）
+    - **得点＋パワーアップ＋カリキュラム(90次元)版で完全クリアを狙って学習中**（下記）。
+  ✓**評価ノイズの正体（判明）**: 学習中の `GREEDY_x` のばらつきは reset非決定ではなく
+    **ネットが学習中で毎回別物**だから。`dettest`で **エミュは同一入力列に対し完全決定的**と確認済み
+    （3試行とも同一x）。best_greedy(=保存済みネット)を `record`/`eval` で回すと毎回完全再現する。
+
+  **⑥ 完全クリア狙い（2026-07, 実装済み・学習中）**:
+    - **報酬シェーピング**: 得点増を加点（コイン+200,踏み+100 等 → 道中で高得点）。
+      **パワーアップ取得=+30**（キノコ/フラワーは被弾で死なず生存価値大）、パワー喪失=−12（死亡−50より軽い）。
+      終端はクリップ除外（クリア+100/死亡−50）。SMB RAM: 得点`$07DD-$07E2`(6桁), コイン`$075E`, パワー`$0756`。
+    - **観測にパワー状態を追加**（小/スーパー/ファイア, index 89）→ STATE_DIM 89→90。
+      `QNet::load_expand` で旧89次元の重みを引き継ぎwarm-start（新特徴の重みは0初期化＝初期方策は不変）。
+    - **セーブステート型カリキュラム**: `nes::save_state/load_state`（CPU+PPU全状態をメモリに退避／復元。
+      mapper0不変・APUは音のみで除外）を新規実装。`snaptest`で再生と完全一致を検証済み。
+      デモ(=best netのgreedy行動列, `gendemo`で生成→`demo.bin`)の後半に16チェックポイントを起動時1パスで作成し、
+      学習の70%をそこから開始＝**未攻略の最終区間を集中反復**（瞬時復元で高速）。残り30%は先頭から。
+    - **チェックポイント選択=距離+得点の複合指標**（同距離なら高得点/パワー保持の方策を保存, 距離優先は維持）。
+    - **並列学習(best-of-N)**: エミュがグローバル・シングルトンなので1プロセス=1コア。`mario_dqn [ROM] [seed] [out.bin]`
+      で別seed/別出力のワーカーを複数プロセス起動→`train_parallel.sh`が全コア活用しbest-of-N選抜（`eval`で採点）。
+      （さらに効率化する場合は「チャンピオン共有の集団学習」を追加可能=未実装）
 - **Phase 4 ⬜ WASM化してブラウザ表示** — 未着手（設計は下記）。
 
 ## ビルド & 実行（MSVC / Visual Studio）
@@ -49,26 +63,38 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 
 build/Release/dqn.exe                                   # Phase1: CartPole
-build/Release/nes_test.exe "Super Mario Bros (JU) (PRG 0).nes"   # Phase2: 起動テスト
-build/Release/mario_dqn.exe envtest "Super Mario Bros (JU) (PRG 0).nes"  # 環境チェック(観測を表示)
-build/Release/mario_dqn.exe tilescan "Super Mario Bros (JU) (PRG 0).nes" # タイルRAM/位置ダンプ(診断)
-build/Release/mario_dqn.exe "Super Mario Bros (JU) (PRG 0).nes"          # Phase3: 学習(長時間・要バックグラウンド)
+build/Release/nes_test.exe "$ROM"                       # Phase2: 起動テスト
+build/Release/mario_dqn.exe envtest  "$ROM"             # 環境チェック(観測を表示)
+build/Release/mario_dqn.exe tilescan "$ROM"             # タイルRAM/位置ダンプ(診断)
+build/Release/mario_dqn.exe dettest  "$ROM"             # エミュ決定性チェック
+build/Release/mario_dqn.exe scoretest "$ROM" mario_best.bin   # 得点/コイン/パワーRAM確認
+build/Release/mario_dqn.exe gendemo  "$ROM" mario_best.bin demo.bin  # カリキュラム用デモ生成(先に必須)
+build/Release/mario_dqn.exe snaptest "$ROM"             # セーブステート正当性検証(demo.bin必須)
+build/Release/mario_dqn.exe "$ROM"                      # Phase3: 学習(長時間・要バックグラウンド)
+build/Release/mario_dqn.exe eval "$ROM" mario_best_0.bin      # チェックポイント採点(best-of-N選抜用)
+./train_parallel.sh 6                                   # 並列学習(6ワーカー=6コア, demo.bin必須)
+build/Release/mario_dqn.exe record  "$ROM" mario_best.bin web/run.bin  # ブラウザ再生用に録画
 ```
+（`$ROM` = `"Super Mario Bros (JU) (PRG 0).nes"`。カリキュラム/並列学習の前に `gendemo` で `demo.bin` を作る）
 
 - clang / g++(w64devkit) / emcc でも同一コードが通る。**MinGWのバイナリはアンチウイルス
   誤検知するので、配布用は MSVC ビルドを使う**（ユーザー方針）。
-- 学習済み重み: `mario_best.bin`（best_x を更新するたび保存）。
+- 学習済み重み: `mario_best.bin`（複合指標=距離+得点 を更新するたび保存, 90次元）。
+  `demo.bin` はカリキュラム用デモ（`gendemo`で生成, .gitignore対象＝再生成可）。
 
 ## ファイル地図
 
 ```
 autograd.h/.cpp   自作autograd（mini-yolov5流用）+ Huber
-qnet.h            QネットMLP + Adam + copy_from + save/load
+qnet.h            QネットMLP + Adam + copy_from + save/load + load_expand(次元拡張warm-start)
 replay.h          経験リプレイ
 cartpole.h        Phase1環境 / main.cpp = CartPole学習
-nes.h/.cpp        ヘッドレスNES API（load_file/load_bytes/set_buttons/step_frame/pixels/ram）
-third_party/laines/  vendorしたLaiNESコア（de-GNU化済み、SDL/音源除去、mapper24削除）
-mario.h/.cpp      SMB 1-1 環境（RAM特徴量・行動・報酬・reset）/ mario_dqn.cpp = 学習/録画
+nes.h/.cpp        ヘッドレスNES API（+ save_state/load_state = CPU+PPU全状態の退避/復元）
+third_party/laines/  vendorしたLaiNESコア（de-GNU化済, SDL/音源除去, cpu/ppuにsave_state追加）
+mario.h/.cpp      SMB 1-1 環境（観測/報酬/reset + カリキュラム: demo再生・チェックポイント瞬時復元）
+mario_dqn.cpp     学習(warm-start/カリキュラム/並列)・診断(envtest/tilescan/dettest/snaptest/
+                  scoretest)・gendemo/record/eval
+train_parallel.sh best-of-N並列学習ランチャ（別プロセス=別コア）
 web/index.html    録画(run.bin)をcanvasで再生するビューア
 web/serve.py      Python簡易HTTPサーバ / server.cpp = cpp-httplib版(third_party/httplib.h)
 ```

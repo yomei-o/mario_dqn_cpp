@@ -43,6 +43,43 @@ static int warmupCycles;
 inline bool rendering() { return mask.bg || mask.spr; }
 inline int spr_height() { return ctrl.sprSz ? 16 : 8; }
 
+/* --- In-memory state snapshot (see ppu.hpp) --- */
+void save_state(std::vector<uint8_t>& b)
+{
+    auto put = [&](const void* p, size_t n) {
+        const uint8_t* s = (const uint8_t*)p; b.insert(b.end(), s, s + n);
+    };
+    put(&mirroring, sizeof(mirroring));
+    put(ciRam, sizeof(ciRam)); put(cgRam, sizeof(cgRam)); put(oamMem, sizeof(oamMem));
+    put(oam, sizeof(oam)); put(secOam, sizeof(secOam));
+    put(&vAddr, sizeof(vAddr)); put(&tAddr, sizeof(tAddr));
+    put(&fX, 1); put(&oamAddr, 1); put(&readBuffer, 1); put(&openBus, 1);
+    put(&ctrl, sizeof(ctrl)); put(&mask, sizeof(mask)); put(&status, sizeof(status));
+    put(&vBlankSuppressed, 1);
+    put(&nt, 1); put(&at, 1); put(&bgL, 1); put(&bgH, 1);
+    put(&atShiftL, 1); put(&atShiftH, 1); put(&bgShiftL, sizeof(bgShiftL)); put(&bgShiftH, sizeof(bgShiftH));
+    put(&atLatchL, 1); put(&atLatchH, 1);
+    put(&scanline, sizeof(int)); put(&dot, sizeof(int)); put(&frameOdd, 1);
+    put(&warmupCycles, sizeof(int));
+}
+const uint8_t* load_state(const uint8_t* p)
+{
+    auto get = [&](void* d, size_t n) { memcpy(d, p, n); p += n; };
+    get(&mirroring, sizeof(mirroring));
+    get(ciRam, sizeof(ciRam)); get(cgRam, sizeof(cgRam)); get(oamMem, sizeof(oamMem));
+    get(oam, sizeof(oam)); get(secOam, sizeof(secOam));
+    get(&vAddr, sizeof(vAddr)); get(&tAddr, sizeof(tAddr));
+    get(&fX, 1); get(&oamAddr, 1); get(&readBuffer, 1); get(&openBus, 1);
+    get(&ctrl, sizeof(ctrl)); get(&mask, sizeof(mask)); get(&status, sizeof(status));
+    get(&vBlankSuppressed, 1);
+    get(&nt, 1); get(&at, 1); get(&bgL, 1); get(&bgH, 1);
+    get(&atShiftL, 1); get(&atShiftH, 1); get(&bgShiftL, sizeof(bgShiftL)); get(&bgShiftH, sizeof(bgShiftH));
+    get(&atLatchL, 1); get(&atLatchH, 1);
+    get(&scanline, sizeof(int)); get(&dot, sizeof(int)); get(&frameOdd, 1);
+    get(&warmupCycles, sizeof(int));
+    return p;
+}
+
 /* Get CIRAM address according to mirroring */
 u16 nt_mirror(u16 addr)
 {

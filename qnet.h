@@ -61,6 +61,32 @@ public:
         std::fclose(f);
         return true;
     }
+
+    // Warm-start from a checkpoint with a SMALLER input dimension: load the old
+    // input-to-hidden weights (W1) into the first rows and ZERO the new feature's
+    // row, so the initial policy is identical to the old net while the new input
+    // starts contributing from zero. All other layers must match exactly.
+    // Lets us append observation features without discarding a trained policy.
+    bool load_expand(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        auto ps = params();
+        for (size_t i = 0; i < ps.size(); ++i) {
+            int n = 0;
+            if (std::fread(&n, sizeof(int), 1, f) != 1) { std::fclose(f); return false; }
+            auto& d = ps[i].data();
+            if (i == 0) {  // W1: [sdim, hdim] row-major; allow fewer input rows
+                if (n > ps[i].numel() || n % hdim != 0) { std::fclose(f); return false; }
+                if ((int)std::fread(d.data(), sizeof(float), n, f) != n) { std::fclose(f); return false; }
+                for (size_t j = n; j < d.size(); ++j) d[j] = 0.f;   // new feature -> no-op initially
+            } else {
+                if (n != ps[i].numel()) { std::fclose(f); return false; }
+                if ((int)std::fread(d.data(), sizeof(float), n, f) != n) { std::fclose(f); return false; }
+            }
+        }
+        std::fclose(f);
+        return true;
+    }
 };
 
 // Adam optimizer over a fixed parameter list.

@@ -10,6 +10,8 @@
 #include "mario.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <string>
 #include <vector>
 #include <deque>
 #include <algorithm>
@@ -29,8 +31,9 @@ static int greedy_action(QNet& net, const std::vector<float>& s) {
     return argmax_row(net.forward(x).data(), 0, net.adim);
 }
 
-// One fully-greedy rollout; returns the max level-x reached (honest skill metric).
-static int greedy_episode(QNet& net, mario::Env& env) {
+// One fully-greedy rollout from the level start (honest skill metric). Returns
+// the max level-x reached; if out_score is given, also reports the final score.
+static int greedy_episode(QNet& net, mario::Env& env, int* out_score = nullptr) {
     std::vector<float> s = env.reset();
     bool done = false; int mx = 0;
     while (!done) {
@@ -39,6 +42,7 @@ static int greedy_episode(QNet& net, mario::Env& env) {
         s = env.observation();
         mx = std::max(mx, env.mario_x());
     }
+    if (out_score) *out_score = env.score();
     return mx;
 }
 
@@ -55,7 +59,7 @@ static void clip_grads(std::vector<Tensor>& ps, float max_norm) {
 static int record(const char* rom, const char* weights, const char* out_path) {
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
     QNet net(S, A, 256);
-    if (!net.load(weights)) std::printf("(warning) could not load %s; using random net\n", weights);
+    if (!net.load_expand(weights)) std::printf("(warning) could not load %s; using random net\n", weights);
     mario::Env env;
     if (!env.init(rom)) return 1;
     env.reset();
@@ -87,6 +91,91 @@ static int record(const char* rom, const char* weights, const char* out_path) {
     return 0;
 }
 
+// Diagnostic: verify SMB score/coins/power-state RAM by playing greedily and
+// printing those values whenever they change (stomps/coins/power-ups add score).
+static int scoretest(const char* rom, const char* weights) {
+    auto score_of = []() {
+        int s = 0;
+        for (int i = 0; i < 6; ++i) s = s * 10 + nes::ram(0x07DD + i);   // 6 BCD digits
+        return s;
+    };
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    QNet net(S, A, 256);
+    bool have = net.load_expand(weights);
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    std::vector<float> s = env.reset();
+    int last_score = score_of(), last_coins = nes::ram(0x075E), last_pow = nes::ram(0x0756);
+    std::printf("start: score=%d coins=%d power=%d (0=small 1=super 2=fire)\n", last_score, last_coins, last_pow);
+    bool done = false;
+    for (int t = 0; t < 600 && !done; ++t) {
+        int a = have ? greedy_action(net, s) : mario::A_RIGHT_B;
+        env.step(a, done);
+        s = env.observation();
+        int sc = score_of(), co = nes::ram(0x075E), pw = nes::ram(0x0756);
+        if (sc != last_score || co != last_coins || pw != last_pow) {
+            std::printf("  x=%4d  score=%d(+%d)  coins=%d  power=%d\n",
+                        env.mario_x(), sc, sc - last_score, co, pw);
+            last_score = sc; last_coins = co; last_pow = pw;
+        }
+    }
+    std::printf("end: x=%d score=%d coins=%d power=%d\n", env.mario_x(), last_score, last_coins, last_pow);
+    return 0;
+}
+
+// Diagnostic: confirm the emulator is deterministic across resets IN-PROCESS
+// (load-bearing for curriculum-by-input-replay). Run the same fixed action
+// sequence 3x in one process; all runs must land on the same x.
+static int dettest(const char* rom) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    for (int trial = 0; trial < 3; ++trial) {
+        env.reset();
+        bool done = false;
+        for (int t = 0; t < 250 && !done; ++t) {
+            int a = (t * 7 + 3) % mario::N_ACTIONS;   // fixed pseudo-pattern, no RNG
+            env.step(a, done);
+        }
+        std::printf("trial %d: final x=%d\n", trial, env.mario_x());
+    }
+    return 0;
+}
+
+// Diagnostic: verify an in-memory snapshot reproduces the ground-truth replay.
+// Restore a checkpoint and replay-to-the-same-point must (a) start at the same
+// x and (b) evolve identically under a fixed action sequence. If they match, the
+// snapshot captured all state the curriculum relies on.
+static int snaptest(const char* rom) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    if (!env.load_demo("demo.bin")) { std::printf("no demo.bin (run gendemo first)\n"); return 1; }
+    env.build_curriculum(8);
+    int nck = env.num_checkpoints();
+    if (nck == 0) { std::printf("no checkpoints built\n"); return 1; }
+    int k = nck - 1;
+    int idx = env.demo_len() - 8;   // matches build_curriculum's last target (hi)
+    auto rollout = [&](bool snapshot) {
+        int x0;
+        if (snapshot) { env.reset_to_checkpoint(k); }
+        else          { env.reset_from(idx); }
+        x0 = env.mario_x();
+        bool done = false; int last = x0;
+        for (int t = 0; t < 200 && !done; ++t) {
+            int a = (t * 5 + 2) % mario::N_ACTIONS;   // fixed pattern
+            env.step(a, done);
+            last = env.mario_x();
+        }
+        return std::pair<int,int>(x0, last);
+    };
+    auto gt = rollout(false);   // ground truth: boot + replay
+    auto sn = rollout(true);    // snapshot restore
+    std::printf("checkpoint x: replay=%d snapshot=%d  %s\n", gt.first, sn.first,
+                gt.first == sn.first ? "OK" : "MISMATCH");
+    std::printf("after 200 fixed steps: replay x=%d snapshot x=%d  %s\n", gt.second, sn.second,
+                gt.second == sn.second ? "OK (snapshot is complete)" : "MISMATCH (snapshot incomplete!)");
+    return (gt == sn) ? 0 : 2;
+}
+
 // Diagnostic: dump SMB's background tile buffer + Mario's position so we can
 // verify the tile-window geometry (which rows are ground, where Mario sits).
 static int tilescan(const char* rom) {
@@ -110,6 +199,48 @@ static int tilescan(const char* rom) {
         }
         std::printf("\n");
     }
+    return 0;
+}
+
+// Generate a demonstration: run the trained net greedily from the level start
+// and save the action sequence to `out` (u32 count + count action bytes). This
+// demo is replayed by the curriculum to fast-forward episodes to the frontier.
+static int gendemo(const char* rom, const char* weights, const char* out) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    QNet net(S, A, 256);
+    if (!net.load_expand(weights)) { std::printf("could not load %s\n", weights); return 1; }
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    std::vector<float> s = env.reset();
+    std::vector<uint8_t> actions;
+    bool done = false;
+    for (int t = 0; t < 2000 && !done; ++t) {
+        int a = greedy_action(net, s);
+        env.step(a, done);
+        s = env.observation();
+        actions.push_back((uint8_t)a);
+    }
+    FILE* f = std::fopen(out, "wb");
+    if (!f) { std::printf("cannot open %s\n", out); return 1; }
+    uint32_t n = (uint32_t)actions.size();
+    std::fwrite(&n, 4, 1, f);
+    std::fwrite(actions.data(), 1, n, f);
+    std::fclose(f);
+    std::printf("demo: %u actions, final x=%d -> %s\n", n, env.mario_x(), out);
+    return 0;
+}
+
+// Evaluate a checkpoint: greedy rollout from the start, print distance + score.
+// Used to pick the winner among parallel best-of-N workers' checkpoints.
+static int evalnet(const char* rom, const char* weights) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    QNet net(S, A, 256);
+    if (!net.load_expand(weights)) { std::printf("%s: load failed\n", weights); return 1; }
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    int sc = 0;
+    int x = greedy_episode(net, env, &sc);
+    std::printf("%s: greedy x=%d score=%d (metric=%d)\n", weights, x, sc, x + sc);
     return 0;
 }
 
@@ -147,36 +278,93 @@ int main(int argc, char** argv) {
         return envtest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
     if (argc > 1 && std::strcmp(argv[1], "tilescan") == 0)
         return tilescan(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "dettest") == 0)
+        return dettest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "snaptest") == 0)
+        return snaptest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "scoretest") == 0)
+        return scoretest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                         argc > 3 ? argv[3] : "mario_best.bin");
+    if (argc > 1 && std::strcmp(argv[1], "gendemo") == 0)
+        return gendemo(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                       argc > 3 ? argv[3] : "mario_best.bin",
+                       argc > 4 ? argv[4] : "demo.bin");
     if (argc > 1 && std::strcmp(argv[1], "record") == 0)
         return record(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                       argc > 3 ? argv[3] : "mario_best.bin",
                       argc > 4 ? argv[4] : "web/run.bin");
-    const char* rom = argc > 1 ? argv[1] : "Super Mario Bros (JU) (PRG 0).nes";
+    if (argc > 1 && std::strcmp(argv[1], "eval") == 0)
+        return evalnet(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                       argc > 3 ? argv[3] : "mario_best.bin");
 
-    seed(0);
+    // Training. Usage: mario_dqn [ROM] [seed] [out.bin]
+    // Parallelism: launch N processes with distinct seeds and out paths (each
+    // gets its own emulator on its own core -- the core is a global singleton, so
+    // one process = one core), then pick the best checkpoint with `eval`.
+    const char* rom = argc > 1 ? argv[1] : "Super Mario Bros (JU) (PRG 0).nes";
+    int seed_val = argc > 2 ? std::atoi(argv[2]) : 0;
+    std::string out_path = argc > 3 ? argv[3] : "mario_best.bin";
+
+    seed(seed_val);
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
     const float gamma = 0.99f;
     const int batch = 32, warmup = 5000, target_sync = 2000, episodes = 12000;
     const int train_freq = 4;   // gradient step every N env steps (Atari-DQN style; ~Nx faster wall-clock)
-    const float eps_start = 1.0f, eps_end = 0.1f, eps_decay_steps = 250000.f;   // keep exploring pipe-jump timing
+    const float eps_end = 0.1f;
 
     QNet online(S, A, 256), target(S, A, 256), best(S, A, 256);
-    target.copy_from(online); best.copy_from(online);
     Adam opt(online.params(), 2.5e-4f);
     auto params = online.params();
     Replay replay(100000);
     mario::Env env;
     if (!env.init(rom)) return 1;
 
+    // Warm start: continue improving the current best net rather than relearning
+    // from scratch. With a good policy loaded, keep exploration modest so we
+    // refine (push past the frontier) instead of destroying it.
+    // Warm start from this worker's own checkpoint if present, else the shared base.
+    bool warm = online.load_expand(out_path.c_str()) || online.load_expand("mario_best.bin");   // expands 89->90 dims
+    float eps_start = warm ? 0.3f : 1.0f;
+    float eps_decay_steps = warm ? 150000.f : 250000.f;
+    target.copy_from(online); best.copy_from(online);
+
+    // Curriculum: if a demonstration exists, precompute snapshots across the back
+    // half of it, then start most episodes at one of those checkpoints (near the
+    // frontier) so the agent densely practices the still-unsolved final stretch
+    // instead of replaying the easy start each time. Snapshots restore instantly.
+    bool have_demo = env.load_demo("demo.bin");
+    if (have_demo) env.build_curriculum(16);
+    int n_ckpt = env.num_checkpoints();
+    bool curriculum = n_ckpt > 0;
+    const float curriculum_prob = 0.7f;
+
     std::printf("== DQN x Super Mario Bros 1-1 (RAM features, real NES) ==\n");
-    std::printf("   state_dim=%d actions=%d | batch=%d target_sync=%d\n", S, A, batch, target_sync);
+    std::printf("   seed=%d out=%s\n", seed_val, out_path.c_str());
+    std::printf("   state_dim=%d actions=%d | batch=%d target_sync=%d | warm=%d curriculum=%d(demo=%d ckpts=%d)\n",
+                S, A, batch, target_sync, (int)warm, (int)curriculum, env.demo_len(), n_ckpt);
+    if (curriculum)
+        std::printf("   checkpoint x-range: %d .. %d\n",
+                    env.checkpoint_x(0), env.checkpoint_x(n_ckpt - 1));
 
     long total_steps = 0;
     std::deque<int> recent_x;   // last-50 episode max distances
-    int best_x = 0;
+    // Checkpoint by a distance+score composite so that, among policies reaching a
+    // similar distance, the higher-scoring one (more coins/power-ups) is kept --
+    // while distance still dominates, keeping the flag as the primary objective.
+    int best_x = 0, best_score = 0, best_metric = -1;
+    if (warm) { best_x = greedy_episode(online, env, &best_score); best_metric = best_x + best_score; }
+    std::printf("   warm-start greedy x=%d score=%d\n", best_x, best_score);
 
     for (int ep = 1; ep <= episodes; ++ep) {
-        std::vector<float> s = env.reset();
+        // Curriculum: most episodes start at a checkpoint near the frontier;
+        // the rest start from x=0 so the whole policy keeps getting practiced.
+        std::vector<float> s;
+        if (curriculum && ag::randf() < curriculum_prob) {
+            int k = (int)(ag::randf() * n_ckpt) % n_ckpt;
+            s = env.reset_to_checkpoint(k);
+        } else {
+            s = env.reset();
+        }
         bool done = false;
         float ep_ret = 0; int ep_max_x = 0;
         while (!done) {
@@ -226,14 +414,19 @@ int main(int argc, char** argv) {
 
         // Checkpoint by GREEDY skill (not by exploration luck), like CartPole/Othello.
         if (ep % 25 == 0 && (int)replay.size() >= warmup) {
-            int gx = greedy_episode(online, env);
-            if (gx > best_x) { best_x = gx; best.copy_from(online); best.save("mario_best.bin"); }
+            int gs = 0;
+            int gx = greedy_episode(online, env, &gs);
+            int metric = gx + gs;
+            if (metric > best_metric) {
+                best_metric = metric; best_x = gx; best_score = gs;
+                best.copy_from(online); best.save(out_path.c_str());
+            }
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
-            std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  best_greedy %4d  eps %.2f  steps %ld\n",
-                        ep, ep_ret, ep_max_x, avg_x, gx, best_x, eps, total_steps);
+            std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  score %4d  best_greedy %4d  best_score %4d  eps %.2f  steps %ld\n",
+                        ep, ep_ret, ep_max_x, avg_x, gx, gs, best_x, best_score, eps, total_steps);
             std::fflush(stdout);
         }
     }
-    std::printf("\nbest greedy distance: x=%d (saved mario_best.bin)\n", best_x);
+    std::printf("\nbest greedy: x=%d score=%d (saved %s)\n", best_x, best_score, out_path.c_str());
     return 0;
 }

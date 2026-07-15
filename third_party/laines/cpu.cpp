@@ -876,6 +876,41 @@ void power()
     INT<RESET>();
 }
 
+/* --- In-memory state snapshot (see cpu.hpp) --- */
+void save_state(std::vector<uint8_t>& b)
+{
+    auto put = [&](const void* p, size_t n) {
+        const uint8_t* s = (const uint8_t*)p; b.insert(b.end(), s, s + n);
+    };
+    put(ram, sizeof(ram));
+    put(&A, 1); put(&X, 1); put(&Y, 1); put(&S, 1); put(&PC, 2);
+    u8 pflags = P.get(); put(&pflags, 1);
+    put(&nmi_line, 1); put(&nmi_pending, 1); put(&nmi_latch, 1); put(&nmi_previous, 1);
+    put(&irq, 1); put(&data_bus, 1);
+    put(&is_put_cycle, 1); put(&is_rmw_cycle, 1); put(&is_get_cycle, 1);
+    put(&apu_cycle_phase, sizeof(int));
+    put(&oam_dma_active, 1); put(&oam_dma_index, sizeof(int)); put(&oam_dma_addr, 2);
+    put(&remainingCycles, sizeof(int));
+    put(&interrupt_already_polled, 1);
+    put(&ppu_sub_cycle, sizeof(int));
+}
+const uint8_t* load_state(const uint8_t* p)
+{
+    auto get = [&](void* d, size_t n) { memcpy(d, p, n); p += n; };
+    get(ram, sizeof(ram));
+    get(&A, 1); get(&X, 1); get(&Y, 1); get(&S, 1); get(&PC, 2);
+    u8 pflags; get(&pflags, 1); P.set(pflags);
+    get(&nmi_line, 1); get(&nmi_pending, 1); get(&nmi_latch, 1); get(&nmi_previous, 1);
+    get(&irq, 1); get(&data_bus, 1);
+    get(&is_put_cycle, 1); get(&is_rmw_cycle, 1); get(&is_get_cycle, 1);
+    get(&apu_cycle_phase, sizeof(int));
+    get(&oam_dma_active, 1); get(&oam_dma_index, sizeof(int)); get(&oam_dma_addr, 2);
+    get(&remainingCycles, sizeof(int));
+    get(&interrupt_already_polled, 1);
+    get(&ppu_sub_cycle, sizeof(int));
+    return p;
+}
+
 /* Run the CPU for roughly a frame */
 void run_frame()
 {

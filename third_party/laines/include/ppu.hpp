@@ -1,5 +1,7 @@
 #pragma once
 #include "common.hpp"
+#include <vector>
+#include <cstdint>
 
 namespace PPU {
 
@@ -89,6 +91,11 @@ template <bool write> u8 access(u16 index, u8 v = 0, bool rmw = false);
 void set_mirroring(Mirroring mode);
 void step();
 void reset();
+
+// In-memory state snapshot (all persistent PPU statics; see cpu.hpp for the
+// buffer convention). The video output buffer `pixels` is not saved.
+void save_state(std::vector<uint8_t>& buf);
+const uint8_t* load_state(const uint8_t* p);
 
 // Exposed for MMC5 (needs to know rendering phase and access nametables)
 extern u8 ciRam[0x800];  // Nametable RAM

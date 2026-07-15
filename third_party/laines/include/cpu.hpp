@@ -1,6 +1,8 @@
 #pragma once
 #include "common.hpp"
 #include <Nes_Apu.h>
+#include <vector>
+#include <cstdint>
 
 namespace CPU {
 
@@ -29,6 +31,13 @@ int dmc_read(void*, cpu_addr_t addr);
 int elapsed();  // Get current CPU cycle count in frame
 void power();
 void run_frame();
+
+// In-memory state snapshot (all persistent CPU statics). Append to / read from
+// a byte buffer; load_state returns the read cursor. Used for fast curriculum
+// checkpoint restore. APU is not included (sound-only; does not affect the RAM
+// gameplay state the agent observes).
+void save_state(std::vector<uint8_t>& buf);
+const uint8_t* load_state(const uint8_t* p);
 
 // Exposed for debugging
 extern u8 ram[0x800];
