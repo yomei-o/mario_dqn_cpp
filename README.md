@@ -9,13 +9,15 @@
 
 autograd は [mini-yolov5-cpp](https://github.com/yomei-o/mini-yolov5-cpp) の自作エンジンを流用。
 
+> **中断→再開する人へ**：現在地と次の一手は [`RESUME.md`](RESUME.md) にまとめてあります。
+
 ## ロードマップ
 
 | Phase | 内容 | 状態 |
 |------|------|------|
 | **1** | **CartPole で DQN コアを実証**（リプレイ・ターゲットネット・Double DQN・ε-greedy・勾配クリップ・Adam） | ✅ 完了 |
 | **2** | **LaiNES**（C++ NESエミュ）を組み込み、ヘッドレスな `step/観測/報酬/done` API を実装 | ✅ 完了 |
-| 3 | DQN × スーパーマリオ（**RAM特徴量**：マリオのx/y・敵・タイル）。到達距離が伸びるのを学習 | 予定 |
+| **3** | DQN × スーパーマリオ（**RAM特徴量**：マリオのx/y・速度・敵）。到達距離を学習 | 🚧 進行中 |
 | 4 | NES＋DQNを **WASM(Emscripten)** 化し、ブラウザ(HTML+JS canvas)でプレイ表示 | 予定 |
 
 > **設計判断**：CPU＋自作autogradで「生ピクセルから本物マリオを1面クリア」は非現実的（Atari DQNは

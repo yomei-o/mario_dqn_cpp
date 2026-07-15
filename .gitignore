@@ -6,8 +6,9 @@ build/
 *.exp
 *.pdb
 
-# trained weights / checkpoints
+# trained weights / checkpoints (keep the released Mario checkpoint)
 *.bin
+!mario_best.bin
 
 # NES ROMs are copyrighted -- keep them out of code commits (supply your own)
 *.nes
