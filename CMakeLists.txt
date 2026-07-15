@@ -14,3 +14,15 @@ else()
     find_package(Threads REQUIRED)
     target_link_libraries(dqn PRIVATE Threads::Threads)
 endif()
+
+# Phase 2: headless NES (vendored LaiNES core, SDL/audio stripped) + boot test.
+file(GLOB LAINES_SRC third_party/laines/*.cpp third_party/laines/mappers/*.cpp)
+add_executable(nes_test nes_test.cpp nes.cpp ${LAINES_SRC})
+target_include_directories(nes_test PRIVATE . third_party/laines/include)
+# The vendored LaiNES core was de-GNU-ified (case-ranges -> if/else) so it builds
+# with plain MSVC. /permissive- enables the iso646 alternative tokens (and/or/not).
+if (MSVC)
+    target_compile_options(nes_test PRIVATE /O2 /permissive-)
+else()
+    target_compile_options(nes_test PRIVATE -O2)
+endif()

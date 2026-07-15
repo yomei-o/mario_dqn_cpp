@@ -14,9 +14,19 @@ The autograd is reused from [mini-yolov5-cpp](https://github.com/yomei-o/mini-yo
 | Phase | What | Status |
 |------|------|--------|
 | **1** | **Prove the DQN core on CartPole** (replay, target net, Double DQN, ε-greedy, grad clipping, Adam) | ✅ done |
-| 2 | Embed **LaiNES** (C++ NES emulator); implement the RL API `step/obs/reward/done` | planned |
+| **2** | Embed **LaiNES** (C++ NES emulator); headless `step/obs/reward/done` API | ✅ done |
 | 3 | DQN × Super Mario (**RAM features**: Mario x/y, enemies, tiles); watch progress distance grow | planned |
-| 4 | (optional) raw-pixel version | optional |
+| 4 | Compile NES + DQN to **WASM (Emscripten)**; play in the browser (HTML + JS canvas) | planned |
+
+## Phase 2 (headless NES) — done
+
+`third_party/laines/` vendors the **LaiNES** (BSD-2) core, **stripped of SDL/audio/GUI**
+(`GUI::new_frame` = grab framebuffer, `GUI::get_joypad_state` = inject input, APU stubbed).
+`nes.h/.cpp` exposes a WASM-friendly frame-driven API (`load_file`/`load_bytes`, `set_buttons`,
+`step_frame`, `pixels`, `ram`). It **builds with plain MSVC/Visual Studio** — LaiNES's GNU
+case-ranges were rewritten to if/else, so no MinGW is needed (avoids antivirus false positives);
+clang/g++/emcc compile the same code. Verified: real SMB boots and Mario walks right (RAM
+x-position increases) under `nes_test`.
 
 > **Design call**: "raw pixels → clear a real Mario level on CPU + a from-scratch autograd"
 > is not realistic (Atari DQN took days on GPUs back then). So the environment is a **real
