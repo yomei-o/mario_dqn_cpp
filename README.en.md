@@ -15,8 +15,10 @@ The autograd is reused from [mini-yolov5-cpp](https://github.com/yomei-o/mini-yo
 |------|------|--------|
 | **1** | **Prove the DQN core on CartPole** (replay, target net, Double DQN, ε-greedy, grad clipping, Adam) | ✅ done |
 | **2** | Embed **LaiNES** (C++ NES emulator); headless `step/obs/reward/done` API | ✅ done |
-| 3 | DQN × Super Mario (**RAM features**: Mario x/y, enemies, tiles); watch progress distance grow | planned |
+| **3** | DQN × Super Mario (**RAM features**: Mario x/y, velocity, enemies); learn to go far | 🚧 in progress |
 | 4 | Compile NES + DQN to **WASM (Emscripten)**; play in the browser (HTML + JS canvas) | planned |
+
+> **Resuming later?** Current status and next steps are in [`RESUME.md`](RESUME.md).
 
 ## Phase 2 (headless NES) — done
 
