@@ -5,6 +5,8 @@
 #include "autograd.h"
 #include <vector>
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 namespace rl {
 
@@ -36,6 +38,28 @@ public:
     void copy_from(QNet& o) {
         auto p = params(), q = o.params();
         for (size_t i = 0; i < p.size(); ++i) p[i].data() = q[i].data();
+    }
+
+    bool save(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "wb");
+        if (!f) return false;
+        for (auto& t : params()) {
+            int n = t.numel(); std::fwrite(&n, sizeof(int), 1, f);
+            std::fwrite(t.data().data(), sizeof(float), n, f);
+        }
+        std::fclose(f);
+        return true;
+    }
+    bool load(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        for (auto& t : params()) {
+            int n = 0;
+            if (std::fread(&n, sizeof(int), 1, f) != 1 || n != t.numel()) { std::fclose(f); return false; }
+            std::fread(t.data().data(), sizeof(float), n, f);
+        }
+        std::fclose(f);
+        return true;
     }
 };
 
