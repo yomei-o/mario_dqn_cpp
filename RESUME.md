@@ -17,11 +17,21 @@ CPUのみ（この環境ではGPU不可：M2 Mac→UTM→Windows、CUDA/Metal使
   `nes.h/.cpp` の frame駆動API。**MSVCでビルド可**（GNU case範囲をif/elseに書換え済み）。
   実機SMB起動→右入力でマリオ前進を確認。
 - **Phase 3 🚧 DQN×マリオ（RAM特徴量）** — `mario.h/.cpp`（環境）+ `mario_dqn.cpp`（学習）。
-  環境動作確認済み。チェックポイントは **greedy評価で最良保存**に修正済み。
-  短時間学習で **greedyが x=681 まで到達＝1-1最初のクリボー(312)を越える**ところまで来た
-  （`mario_best.bin` はこのネット）。まだ収束前（さらに学習＋地形観測で先へ）。
-  → **次にやること: 学習を長く回す＋地形観測を足す**（下記）。診断で「クリボーは観測に
-  見えている」ことは確認済み（envtest）＝避けられないのは学習不足であって盲目ではない。
+  環境動作確認済み。チェックポイントは **greedy評価で最良保存**。
+  **2026-07 更新: 観測を強化した（STATE_DIM 19→37）。**
+    1. **敵相対x座標のバグ修正** — 従来は低バイト単純減算でページ境界(256px)を跨ぐと符号反転し、
+       前方のクリボーが「後方」と誤認されていた。ページ考慮のレベル絶対座標に修正
+       （敵x = `0x006E+i`*256 + `0x0087+i`）。envtestで接近が `dx=1.0→0.08` と正しく見える。
+    2. **前方タイル窓を観測に追加** — SMB背景タイルRAM `$0500` からマリオ前方 6列×3行を読み、
+       平地=`.##`／穴=`...`／土管=`###` として地形を数値化。土管・穴が「見える」ようになった。
+    3. **停滞シェーピング** — 60ステップ前進なしで軽ペナルティ＋エピソード終了（学習効率化）。
+    4. **train_freq=4** — Atari-DQN流に4環境ステップごとに1勾配更新。NESエミュ(~57 step/s)が
+       ボトルネックなので学習は本質的に長時間（20万stepで約1時間）。→ **バックグラウンドで長回し**。
+  診断ツール `tilescan` でタイル配置とマリオ位置をダンプ可能。
+  **結果(2026-07): 約24万step学習で greedy が x=709 に到達＝旧baseline(681)を更新**
+  （`mario_best.bin`=この37次元ネット, `web/run.bin`=greedy再生を録画済み）。eps=0.05まで減衰後
+  greedy評価はノイズが大きい(reset時の「操作可能まで進める」ループがフレーム単位でずれるため
+  296〜709とばらつく)＝真のスキルは~600前後で、更なる収束は下記の残タスク次第。
 - **Phase 4 ⬜ WASM化してブラウザ表示** — 未着手（設計は下記）。
 
 ## ビルド & 実行（MSVC / Visual Studio）
@@ -32,8 +42,9 @@ cmake --build build --config Release
 
 build/Release/dqn.exe                                   # Phase1: CartPole
 build/Release/nes_test.exe "Super Mario Bros (JU) (PRG 0).nes"   # Phase2: 起動テスト
-build/Release/mario_dqn.exe envtest "Super Mario Bros (JU) (PRG 0).nes"  # 環境チェック
-build/Release/mario_dqn.exe "Super Mario Bros (JU) (PRG 0).nes"          # Phase3: 学習
+build/Release/mario_dqn.exe envtest "Super Mario Bros (JU) (PRG 0).nes"  # 環境チェック(観測を表示)
+build/Release/mario_dqn.exe tilescan "Super Mario Bros (JU) (PRG 0).nes" # タイルRAM/位置ダンプ(診断)
+build/Release/mario_dqn.exe "Super Mario Bros (JU) (PRG 0).nes"          # Phase3: 学習(長時間・要バックグラウンド)
 ```
 
 - clang / g++(w64devkit) / emcc でも同一コードが通る。**MinGWのバイナリはアンチウイルス
@@ -62,18 +73,18 @@ web/serve.py      Python簡易HTTPサーバ / server.cpp = cpp-httplib版(third_
 
 ## 次の一手（Phase 3 収束）
 
-いまの学習は探索中にゴール到達するが、方策として安定していない（avg50_x が ~900 前後で
-頭打ち気味）。改善候補（効きそうな順）:
-1. **学習を長く回す** — `episodes` を増やし eps を 0.05 まで、`eps_decay_steps` を伸ばす。
-   最良ネットのgreedy評価を定期実行して真の到達距離を測る（CartPoleでやったのと同じ）。
-2. **地形が観測に無いのが弱点** — マリオは土管/穴を「見て」いない（x速度の停滞で間接的に
-   しか分からない）。SMBのタイルRAM(0x0500-0x069F)から前方の小さなタイル窓を観測に足すと
-   障害物回避が学べる。または framebuffer を粗くダウンサンプルして足す。
-3. **報酬シェーピング** — 前進報酬に加え、穴落下の早期ペナルティ、停滞ペナルティ等。
-4. ハイパラ: lr、target_sync、frame_skip(いまは4)、γ の調整。
+観測強化(地形タイル窓＋敵座標修正)と停滞シェーピングは実装済み(上記)。残るは**収束**：
+1. **学習を長く回す** — `eps_end=0.05`, `eps_decay_steps=200000`, `train_freq=4` 設定済み。
+   NESエミュ律速で ~57 step/s なので 20万step≈1時間。バックグラウンド実行し、ログの
+   `GREEDY_x`/`best_greedy` で真の到達距離を追う（25エピソードごとにgreedy評価）。
+   `mario_best.bin` は best_greedy 更新のたび自動保存されるので途中停止しても最良ネットは残る。
+2. **まだ弱ければ**: 地形窓の縦方向をジャンプ中でも接地面が見えるよう固定行アンカーにする、
+   タイル窓を広げる、報酬に穴落下の早期ペナルティ、lr/γ/target_sync 調整。
+3. framebuffer ダウンサンプルを観測に足す（CNNなしでも粗い占有格子は効く）。
 
 SMB RAM（実装済み/参考）: x=0x6D*256+0x86, y=0xCE, x速度=0x57(signed), floatState=0x1D,
-状態=0x0E(0x06/0x0B=死), lives=0x75A, 敵active=0x0F..0x13, 敵x=0x87.., 敵y=0xCF.., 縦page=0xB5。
+状態=0x0E(0x06/0x0B=死), lives=0x75A, 敵active=0x0F..0x13, **敵x=0x6E+i(page)*256+0x87+i(low)**,
+敵y=0xCF.., 縦page=0xB5, **背景タイルバッファ=0x0500..0x069F(2画面, 13行×16列, page*0xD0+row*16+col)**。
 
 ## 次の一手（Phase 4 WASM）
 

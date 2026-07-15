@@ -87,6 +87,32 @@ static int record(const char* rom, const char* weights, const char* out_path) {
     return 0;
 }
 
+// Diagnostic: dump SMB's background tile buffer + Mario's position so we can
+// verify the tile-window geometry (which rows are ground, where Mario sits).
+static int tilescan(const char* rom) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    env.reset();
+    bool done;
+    for (int t = 0; t < 20; ++t) env.step(mario::A_RIGHT_B, done);  // walk in a bit
+    int lx = nes::ram(0x006D) * 256 + nes::ram(0x0086);
+    int px = nes::ram(0x0086), py = nes::ram(0x00CE);
+    std::printf("level_x=%d  px(0x86)=%d  py(0xCE)=%d\n", lx, px, py);
+    std::printf("player row=(py-32)/16=%d  player col=(lx/16)%%16=%d  page=%d\n",
+                (py - 32) / 16, (lx / 16) % 16, (lx / 16 / 16) % 2);
+    for (int row = 0; row < 13; ++row) {
+        std::printf("row%2d: ", row);
+        for (int c = 0; c < 8; ++c) {
+            int col = lx / 16 + c;
+            int page = (col / 16) % 2, colp = col % 16;
+            int v = nes::ram(0x0500 + page * 0xD0 + row * 16 + colp);
+            std::printf("%02X ", v);
+        }
+        std::printf("\n");
+    }
+    return 0;
+}
+
 static int envtest(const char* rom) {
     mario::Env env;
     if (!env.init(rom)) return 1;
@@ -101,8 +127,16 @@ static int envtest(const char* rom) {
             if (o[4 + i * 3] > 0.5f)
                 en += " enemy" + std::to_string(i) + "(dx=" + std::to_string(o[4+i*3+1]).substr(0,5) +
                       ",dy=" + std::to_string(o[4+i*3+2]).substr(0,5) + ")";
-        std::printf("  step %2d: x=%d r=%.1f done=%d%s\n", t, env.mario_x(), r, done,
-                    en.empty() ? "" : en.c_str());
+        // Terrain window (obs[19..]): TILE_ROWS chars per column ahead, '#'=solid '.'=open.
+        std::string tiles = " tiles=";
+        int base = 19;
+        for (int c = 0; c < mario::Env::TILE_COLS; ++c) {
+            for (int rr = 0; rr < mario::Env::TILE_ROWS; ++rr)
+                tiles += o[base + c * mario::Env::TILE_ROWS + rr] > 0.5f ? '#' : '.';
+            tiles += '/';
+        }
+        std::printf("  step %2d: x=%d r=%.1f done=%d%s%s\n", t, env.mario_x(), r, done,
+                    en.empty() ? "" : en.c_str(), tiles.c_str());
         if (done) { std::printf("  episode ended at step %d (x=%d)\n", t, env.mario_x()); break; }
     }
     return 0;
@@ -111,6 +145,8 @@ static int envtest(const char* rom) {
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "envtest") == 0)
         return envtest(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "tilescan") == 0)
+        return tilescan(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
     if (argc > 1 && std::strcmp(argv[1], "record") == 0)
         return record(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                       argc > 3 ? argv[3] : "mario_best.bin",
@@ -120,8 +156,9 @@ int main(int argc, char** argv) {
     seed(0);
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
     const float gamma = 0.99f;
-    const int batch = 32, warmup = 3000, target_sync = 2000, episodes = 4000;
-    const float eps_start = 1.0f, eps_end = 0.1f, eps_decay_steps = 60000.f;
+    const int batch = 32, warmup = 5000, target_sync = 2000, episodes = 12000;
+    const int train_freq = 4;   // gradient step every N env steps (Atari-DQN style; ~Nx faster wall-clock)
+    const float eps_start = 1.0f, eps_end = 0.05f, eps_decay_steps = 200000.f;
 
     QNet online(S, A, 256), target(S, A, 256), best(S, A, 256);
     target.copy_from(online); best.copy_from(online);
@@ -154,7 +191,7 @@ int main(int argc, char** argv) {
             s = ns; done = d;
             ++total_steps;
 
-            if ((int)replay.size() >= warmup) {
+            if ((int)replay.size() >= warmup && total_steps % train_freq == 0) {
                 auto idx = replay.sample(batch);
                 auto xs = Tensor::zeros({batch, S}, false), xns = Tensor::zeros({batch, S}, false);
                 for (int b = 0; b < batch; ++b) {
@@ -180,6 +217,12 @@ int main(int argc, char** argv) {
         recent_x.push_back(ep_max_x);
         if (recent_x.size() > 50) recent_x.pop_front();
         double avg_x = 0; for (int x : recent_x) avg_x += x; avg_x /= recent_x.size();
+
+        if (ep % 10 == 0) {   // lightweight heartbeat so progress is visible pre-warmup
+            std::printf("  [hb] ep %d  total_steps %ld  replay %d  last_max_x %d\n",
+                        ep, total_steps, (int)replay.size(), ep_max_x);
+            std::fflush(stdout);
+        }
 
         // Checkpoint by GREEDY skill (not by exploration luck), like CartPole/Othello.
         if (ep % 25 == 0 && (int)replay.size() >= warmup) {
