@@ -209,11 +209,17 @@ float Env::step(int action, bool& done) {
     r += std::min(25.f, 1.0f * std::max(0, sc - prev_score_));
     prev_score_ = sc;
 
-    // Power-ups: worth grabbing (a hit then costs power, not a life); losing power
-    // is penalized but far less than an actual death.
+    // Power-ups, valued by MARIO'S STATE (the user's insight: small Mario dies on
+    // an enemy hit, big Mario only shrinks -- so a mushroom matters far more when
+    // small). The death/hit asymmetry below is already state-dependent (small ->
+    // -50 death, big -> -12 shrink); here we also make the PICKUP state-dependent:
+    //   small->big (first mushroom) = a survival buffer  -> big reward (+50)
+    //   big->fire  (flower)         = already safe, bonus -> small reward (+20)
+    // Power is in the observation (idx 89), so the policy can act state-aware:
+    // careful/seek-mushroom when small, bolder when big.
     int pw = power_state();
-    if (pw > prev_power_) r += 40.f;            // grabbed a mushroom / fire flower (phase ii: value items)
-    else if (pw < prev_power_) r -= 12.f;       // got hit, dropped a power level
+    if (pw > prev_power_) r += (prev_power_ == 0) ? 50.f : 20.f;
+    else if (pw < prev_power_) r -= 12.f;       // got hit, shrank (small Mario would instead DIE -> -50)
     prev_power_ = pw;
 
     done = false;
