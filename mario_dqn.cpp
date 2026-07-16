@@ -387,8 +387,19 @@ static int finditem(const char* rom) {
         if (u < 0.90f) return (int)mario::A_A;
         return (int)mario::A_RIGHT_B;
     };
-    const int HORIZON = 90, MAX_ATTEMPTS = 8000;
-    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt) {
+    // Build a from-boot sequence: demo prefix to the start checkpoint + rollout.
+    auto build = [&](int prefix, const std::vector<uint8_t>& acts, int upto) {
+        std::vector<uint8_t> seq;
+        if (prefix > 0) {
+            const auto& d = env.demo_actions();
+            seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
+        }
+        seq.insert(seq.end(), acts.begin(), acts.begin() + upto);
+        return seq;
+    };
+    bool found_item = false, found_stomp = false;
+    const int HORIZON = 90, MAX_ATTEMPTS = 20000;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS && !(found_item && found_stomp); ++attempt) {
         int k = starts[(int)(ag::randf() * starts.size()) % (int)starts.size()];
         int prefix = 0;
         if (k < 0) env.reset(); else { env.reset_to_checkpoint(k); prefix = env.checkpoint_demo_len(k); }
@@ -399,23 +410,26 @@ static int finditem(const char* rom) {
             int a = biased();
             env.step(a, done);
             acts.push_back((uint8_t)a);
-            if (env.power() > sp) {          // grabbed a power-up!
-                std::vector<uint8_t> seq;
-                if (prefix > 0) {
-                    const auto& d = env.demo_actions();
-                    seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
-                }
-                seq.insert(seq.end(), acts.begin(), acts.end());
-                save_actions("demo_item.bin", seq);
-                std::printf("finditem: FOUND on attempt %d (start_ckpt=%d prefix=%d + %d rollout = %d actions, x=%d) -> demo_item.bin\n",
+            if (!found_item && env.power() > sp) {       // grabbed a mushroom/flower
+                auto seq = build(prefix, acts, (int)acts.size());
+                save_actions("demo_item.bin", seq); found_item = true;
+                std::printf("finditem: MUSHROOM on attempt %d (ckpt=%d prefix=%d + %d = %d actions, x=%d) -> demo_item.bin\n",
                             attempt, k, prefix, (int)acts.size(), (int)seq.size(), env.mario_x());
-                return 0;
+                std::fflush(stdout);
             }
+            if (!found_stomp && env.stomped()) {         // defeated an enemy (stomp)
+                auto seq = build(prefix, acts, (int)acts.size());
+                save_actions("demo_stomp.bin", seq); found_stomp = true;
+                std::printf("finditem: STOMP on attempt %d (ckpt=%d prefix=%d + %d = %d actions, x=%d) -> demo_stomp.bin\n",
+                            attempt, k, prefix, (int)acts.size(), (int)seq.size(), env.mario_x());
+                std::fflush(stdout);
+            }
+            if (found_item && found_stomp) break;
         }
-        if (attempt % 300 == 0) { std::printf("  finditem: %d attempts, still searching...\n", attempt); std::fflush(stdout); }
+        if (attempt % 500 == 0) { std::printf("  finditem: %d attempts (item=%d stomp=%d)...\n", attempt, (int)found_item, (int)found_stomp); std::fflush(stdout); }
     }
-    std::printf("finditem: no power-up found within budget\n");
-    return 1;
+    std::printf("finditem: done (mushroom=%d stomp=%d)\n", (int)found_item, (int)found_stomp);
+    return (found_item || found_stomp) ? 0 : 1;
 }
 
 static int envtest(const char* rom) {
