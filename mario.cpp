@@ -101,9 +101,18 @@ void Env::apply_action_frames(int a) {
 const std::vector<float>& Env::reset() { return reset_from(0); }
 
 const std::vector<float>& Env::reset_from(int start_idx) {
-    boot();
-    int n = std::min(start_idx, (int)demo_.size());
-    for (int i = 0; i < n; ++i) apply_action_frames(demo_[i]);   // fast-forward to checkpoint
+    if (start_idx == 0) {
+        // Fast level-start reset: restore a cached post-boot snapshot instead of
+        // re-running ~350 title-screen frames on every episode. boot() dominated
+        // the from-start episode time, so this roughly doubles trials/sec. The
+        // emulator is deterministic, so the cached start state == a fresh boot.
+        if (have_start_state_) nes::load_state(start_state_);
+        else { boot(); nes::save_state(start_state_); have_start_state_ = true; }
+    } else {
+        boot();
+        int n = std::min(start_idx, (int)demo_.size());
+        for (int i = 0; i < n; ++i) apply_action_frames(demo_[i]);   // fast-forward to checkpoint
+    }
     start_lives_ = lives();
     prev_x_ = level_x();
     max_x_ = prev_x_;
@@ -223,7 +232,19 @@ float Env::step(int action, bool& done) {
     // + an immediate stomp bonus, and NO item (mushroom/coin) reward at all.
     float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));   // full-weight progress - time
     float r = dense;
-    if (stomped_) r += 20.f;                    // defeated an enemy -> clears the path forward
+    if (stomped_) r += 12.f;                    // defeated an enemy -> clears the path (risky for small Mario)
+    else {
+        // Jump-over / evade (user's idea): an enemy that was just ahead is now
+        // BEHIND, still alive, while Mario is airborne -> he safely cleared it.
+        // Rewarded MORE than a stomp: for small Mario, jumping over is easier and
+        // safer (a mis-stomp is death), so we steer toward the safe evade. Outcome
+        // -based + tied to forward progress (enemy must go ahead->behind) -> not
+        // farmable.
+        if (float_state() == 0x01)
+            for (int i = 0; i < 5; ++i)
+                if (pa[i] && RAM(0x000F + i) != 0 && prx[i] >= 0 && prx[i] <= 48 &&
+                    (enemy_level_x(i) - x) < 0) { r += 25.f; break; }
+    }
     prev_score_ = score_val();                  // kept for logging (not rewarded)
     prev_power_ = power_state();                 // kept for the obs power feature (not rewarded)
 

@@ -1,11 +1,11 @@
 #pragma once
 // A gym-style RL wrapper around the headless NES, specialized for Super Mario
 // Bros 1-1. Observation = a compact RAM-feature vector (Mario pos/vel/state +
-// nearby enemies + terrain grid + power). Reward = PROGRESS-FIRST + STOMP: rightward
-// progress - time dominates, plus an IMMEDIATE bonus for stomping an enemy (on the
-// forward line, unlike a mushroom detour), with death/stall/win terminals. No item
-// (mushroom/coin) reward -- their payoff is delayed/multi-step and hard to credit.
-// See Env::step. This is what the DQN agent sees and is optimized against.
+// nearby enemies + terrain grid + power). Reward = PROGRESS-FIRST + ENEMY-HANDLING:
+// rightward progress - time dominates, plus an immediate bonus for getting past an
+// enemy -- jump-OVER/evade (+25, safer for small Mario) or STOMP (+12) -- with
+// death/stall/win terminals. No item (mushroom/coin) reward (delayed/multi-step,
+// hard to credit). See Env::step. This is what the DQN agent optimizes against.
 #include "nes.h"
 #include <vector>
 #include <string>
@@ -74,6 +74,8 @@ private:
     std::vector<std::vector<uint8_t>> ckpt_states_;  // precomputed emulator snapshots
     std::vector<int> ckpt_x_;                 // level-x at each checkpoint (for logging)
     std::vector<int> ckpt_target_;            // demo-action count replayed to reach each checkpoint
+    std::vector<uint8_t> start_state_;        // cached post-boot level-start snapshot (fast reset)
+    bool have_start_state_ = false;
     int prev_x_ = 0, steps_ = 0, start_lives_ = 0;
     int max_x_ = 0, stall_ = 0;                // for stagnation shaping
     int prev_score_ = 0, prev_power_ = 0;      // for score / power-up reward shaping
