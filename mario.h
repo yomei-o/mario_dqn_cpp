@@ -49,6 +49,12 @@ public:
     void build_curriculum(int k_points);
     int num_checkpoints() const { return (int)ckpt_states_.size(); }
     int checkpoint_x(int k) const { return ckpt_x_[k]; }
+    // How many demo actions were replayed to REACH checkpoint k. Concatenating
+    // demo_actions()[0..this] with the actions taken FROM checkpoint k yields a
+    // valid from-boot sequence reproducing that trajectory (the emulator is
+    // deterministic and the snapshot == replaying that demo prefix; see snaptest).
+    int checkpoint_demo_len(int k) const { return ckpt_target_[k]; }
+    const std::vector<uint8_t>& demo_actions() const { return demo_; }
     const std::vector<float>& reset_to_checkpoint(int k);
     float step(int action, bool& done);       // apply action FRAME_SKIP frames
     const std::vector<float>& observation() const { return obs_; }
@@ -56,6 +62,7 @@ public:
     int score() const;                         // SMB score (decoded, x10 implied)
     int coins() const;                         // coin counter
     int power() const;                         // 0=small 1=super 2=fire
+    bool won() const { return won_; }           // did the episode just end at the flagpole?
 
 private:
     std::vector<uint8_t> rom_;
@@ -63,9 +70,11 @@ private:
     std::vector<uint8_t> demo_;               // demonstration actions for curriculum
     std::vector<std::vector<uint8_t>> ckpt_states_;  // precomputed emulator snapshots
     std::vector<int> ckpt_x_;                 // level-x at each checkpoint (for logging)
+    std::vector<int> ckpt_target_;            // demo-action count replayed to reach each checkpoint
     int prev_x_ = 0, steps_ = 0, start_lives_ = 0;
     int max_x_ = 0, stall_ = 0;                // for stagnation shaping
     int prev_score_ = 0, prev_power_ = 0;      // for score / power-up reward shaping
+    bool won_ = false;                         // set when an episode ends at the flagpole
     void boot();                               // title screen -> in-level play
     void apply_action_frames(int a);           // raw FRAME_SKIP advance (no reward/done)
     void build_obs();

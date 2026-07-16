@@ -25,6 +25,19 @@
   - ⚠️ 報酬スケールが変わったので **warm-startネットは学習初期に一時劣化**し得る（既知の性質,
     下記の壁を参照）。新目標で再収束させる想定。`gendemo`のデモも新方策が出たら作り直す。
 
+### 2026-07-16 追加: 勝利キャプチャ + フロンティア自動前進 + 通しクリア録画
+- **勝利キャプチャ**: 学習中にエピソードが**フラッグポール到達(is_win)**したら、その**起動(x=0)からの完全な行動列**を
+  `demo_win_<seed>.bin` に保存。内訳 = 開始チェックポイントまでのデモ接頭辞（`Env::checkpoint_demo_len(k)`）＋
+  そのエピソードの自力行動。**より自力な勝ち(接頭辞が小さい方)だけ更新**するので、学習が進むほど自力区間が伸び、
+  最終的に接頭辞0＝**スタートから通しクリア**に近づく。`mario.h`に`won()`/`checkpoint_demo_len()`/`demo_actions()`を追加。
+- **`recorddemo` モード**: 保存した行動列を`env.reset()`から再生し`web/run.bin`へ録画（決定的なので勝ちデモは
+  通しクリア動画になる）。`build/Release/mario_dqn.exe recorddemo "$ROM" demo_win_0.bin web/run.bin`。
+- **フロンティア前進(=カリキュラム拡張)**: 勝ちデモ(`demo_win_*.bin`)は旗まで届く完全デモなので、これを`demo.bin`に
+  昇格すると`build_curriculum`のチェックポイントが**最終盤(例 x=2178..3087)まで拡張**され、未攻略の終盤を集中練習できる。
+  手順: ワーカー停止→`cp demo.bin demo_2017.bin; cp demo_win_0.bin demo.bin`→`snaptest`で確認→再起動。
+- 運用: 3ワーカー全速(`MARIO_CPU=1.0`)で並列学習しつつ、①`demo_win_*.bin`変化を監視して最も自力な勝ちを
+  `recorddemo`で自動録画、②`server.exe`(:8080)＋`web/index.html`でブラウザ再生。より自力な勝ちが出るたび動画が更新される。
+
 
 **現在地**: greedy x=2017（1-1の約2/3）が確定済みスキル。`mario_best.bin` は **89次元** の
 このネット（コードは今 STATE_DIM=90 だが、`load`系は全て `load_expand` で89→90を吸収するので

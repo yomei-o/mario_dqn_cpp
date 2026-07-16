@@ -108,6 +108,65 @@ static void clip_grads(std::vector<Tensor>& ps, float max_norm) {
     if (norm > max_norm) { float s = max_norm / (norm + 1e-6f); for (auto& p : ps) for (float& g : p.grad()) g *= s; }
 }
 
+// Action-sequence file I/O (u32 count + count action bytes). Shared by the demo
+// tooling and the win-capture path.
+static bool save_actions(const std::string& path, const std::vector<uint8_t>& acts) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    uint32_t n = (uint32_t)acts.size();
+    std::fwrite(&n, 4, 1, f);
+    if (n) std::fwrite(acts.data(), 1, n, f);
+    std::fclose(f);
+    return true;
+}
+static bool load_actions(const std::string& path, std::vector<uint8_t>& acts) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint32_t n = 0;
+    if (std::fread(&n, 4, 1, f) != 1) { std::fclose(f); return false; }
+    acts.resize(n);
+    size_t got = n ? std::fread(acts.data(), 1, n, f) : 0;
+    std::fclose(f);
+    return got == n;
+}
+
+// Replay a saved FROM-BOOT action sequence (e.g. a captured winning run) and
+// record it to web/run.bin for the browser viewer. env.reset() + stepping the
+// sequence reproduces the exact trajectory (deterministic emulator), so a demo
+// that reached the flagpole plays back the full level clear. Same MRUN format
+// as record(): "MRUN", u32 nframes, u32 w, u32 h, then nframes*w*h*3 RGB bytes.
+static int recorddemo(const char* rom, const char* actions_path, const char* out_path) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    std::vector<uint8_t> acts;
+    if (!load_actions(actions_path, acts)) { std::printf("cannot load actions %s\n", actions_path); return 1; }
+    env.reset();
+    FILE* f = std::fopen(out_path, "wb");
+    if (!f) { std::printf("cannot open %s\n", out_path); return 1; }
+    uint32_t w = nes::WIDTH, h = nes::HEIGHT, nframes = 0;
+    std::fwrite("MRUN", 1, 4, f);
+    std::fwrite(&nframes, 4, 1, f); std::fwrite(&w, 4, 1, f); std::fwrite(&h, 4, 1, f);
+    std::vector<uint8_t> rgb(w * h * 3);
+    bool done = false;
+    for (size_t t = 0; t < acts.size() && !done; ++t) {
+        env.step(acts[t], done);
+        const uint32_t* px = nes::pixels();
+        for (uint32_t i = 0; i < w * h; ++i) {
+            rgb[i * 3 + 0] = (px[i] >> 16) & 0xFF;
+            rgb[i * 3 + 1] = (px[i] >> 8) & 0xFF;
+            rgb[i * 3 + 2] = px[i] & 0xFF;
+        }
+        std::fwrite(rgb.data(), 1, rgb.size(), f);
+        ++nframes;
+    }
+    std::fseek(f, 4, SEEK_SET);
+    std::fwrite(&nframes, 4, 1, f);
+    std::fclose(f);
+    std::printf("recorded %u frames from demo (final x=%d, won=%d) -> %s\n",
+                nframes, env.mario_x(), (int)env.won(), out_path);
+    return 0;
+}
+
 // Record a greedy episode of the trained agent to web/run.bin so the browser
 // viewer can play it back. Format: "MRUN", u32 nframes, u32 w, u32 h, then
 // nframes * w*h*3 bytes RGB (one NES frame per agent step).
@@ -348,6 +407,10 @@ int main(int argc, char** argv) {
         return record(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                       argc > 3 ? argv[3] : "mario_best.bin",
                       argc > 4 ? argv[4] : "web/run.bin");
+    if (argc > 1 && std::strcmp(argv[1], "recorddemo") == 0)   // replay a saved action seq (e.g. a captured win)
+        return recorddemo(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                          argc > 3 ? argv[3] : "demo_win_0.bin",
+                          argc > 4 ? argv[4] : "web/run.bin");
     if (argc > 1 && std::strcmp(argv[1], "eval") == 0)
         return evalnet(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                        argc > 3 ? argv[3] : "mario_best.bin");
@@ -430,25 +493,37 @@ int main(int argc, char** argv) {
     if (warm) { best_x = greedy_episode(online, env, &best_score); best_metric = best_x + best_score; }
     std::printf("   warm-start greedy x=%d score=%d\n", best_x, best_score);
 
+    // Win-capture: when a training episode reaches the flagpole, save the FROM-BOOT
+    // action sequence that produced it (demo prefix up to its start checkpoint +
+    // this episode's actions). That sequence is a full level-clear demo -- playable
+    // with `recorddemo`, and promotable to demo.bin to push the curriculum frontier
+    // to the flag. Keep only the most autonomous win (smallest replayed prefix), so
+    // the captured demo trends toward a from-start clear as the agent improves.
+    const std::string win_path = "demo_win_" + std::to_string(seed_val) + ".bin";
+    int best_win_prefix = 1 << 30;
+
     for (int ep = 1; ep <= episodes; ++ep) {
         // Curriculum: a decreasing fraction of episodes start at a checkpoint near
         // the frontier; the rest start from x=0 so the full policy stays practiced.
         float curriculum_prob = cp_start - (cp_start - cp_end) * std::min(1.f, total_steps / cp_anneal);
         std::vector<float> s;
+        int ep_ckpt = -1;                 // checkpoint this episode started from (-1 = level start)
         if (curriculum && ag::randf() < curriculum_prob) {
-            int k = (int)(ag::randf() * n_ckpt) % n_ckpt;
-            s = env.reset_to_checkpoint(k);
+            ep_ckpt = (int)(ag::randf() * n_ckpt) % n_ckpt;
+            s = env.reset_to_checkpoint(ep_ckpt);
         } else {
             s = env.reset();
         }
         bool done = false;
         float ep_ret = 0; int ep_max_x = 0;
+        std::vector<uint8_t> ep_actions;  // this episode's actions (for win-capture)
         while (!done) {
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
             int a = (ag::randf() < eps) ? (int)(ag::randf() * A) % A : greedy_action(online, s);
             std::vector<float> s_next_holder;
             bool d;
             float r = env.step(a, d);
+            ep_actions.push_back((uint8_t)a);
             const std::vector<float>& ns = env.observation();
             ep_ret += r; ep_max_x = std::max(ep_max_x, env.mario_x());
             replay.push({s, ns, a, r, d});
@@ -477,6 +552,25 @@ int main(int argc, char** argv) {
             }
             if (total_steps % target_sync == 0) target.copy_from(online);
             throttle.maybe_sleep();   // yield CPU so the machine stays usable
+        }
+
+        // Flagpole reached: stitch a from-boot clear sequence and save it if it is
+        // more autonomous (smaller demo prefix) than any previous capture.
+        if (env.won()) {
+            int prefix = (ep_ckpt >= 0) ? env.checkpoint_demo_len(ep_ckpt) : 0;
+            if (prefix < best_win_prefix) {
+                best_win_prefix = prefix;
+                std::vector<uint8_t> seq;
+                if (prefix > 0) {
+                    const auto& d = env.demo_actions();
+                    seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
+                }
+                seq.insert(seq.end(), ep_actions.begin(), ep_actions.end());
+                save_actions(win_path, seq);
+                std::printf("FLAG ep %d  from_ckpt %d (prefix %d) + %d self actions = %d total -> %s\n",
+                            ep, ep_ckpt, prefix, (int)ep_actions.size(), (int)seq.size(), win_path.c_str());
+                std::fflush(stdout);
+            }
         }
 
         recent_x.push_back(ep_max_x);

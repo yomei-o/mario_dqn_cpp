@@ -111,6 +111,7 @@ const std::vector<float>& Env::reset_from(int start_idx) {
     stall_ = 0;
     prev_score_ = score_val();
     prev_power_ = power_state();
+    won_ = false;
     build_obs();
     return obs_;
 }
@@ -129,6 +130,7 @@ bool Env::load_demo(const char* path) {
 void Env::build_curriculum(int k_points) {
     ckpt_states_.clear();
     ckpt_x_.clear();
+    ckpt_target_.clear();
     int L = (int)demo_.size();
     if (L < 40 || k_points < 1) return;
     int lo = L / 2, hi = std::max(1, L - 8);   // back half, stopping short of the fatal tail
@@ -148,6 +150,7 @@ void Env::build_curriculum(int k_points) {
             nes::save_state(st);
             ckpt_states_.push_back(std::move(st));
             ckpt_x_.push_back(level_x());
+            ckpt_target_.push_back(targets[t]);   // demo actions replayed to reach here (== i+1)
             ++t;
         }
     }
@@ -162,6 +165,7 @@ const std::vector<float>& Env::reset_to_checkpoint(int k) {
     stall_ = 0;
     prev_score_ = score_val();
     prev_power_ = power_state();
+    won_ = false;
     build_obs();
     return obs_;
 }
@@ -230,7 +234,7 @@ float Env::step(int action, bool& done) {
 
     done = false;
     if (is_dead()) { r = dense - 50.f; done = true; }           // pit/enemy death: clearly bad
-    else if (is_win()) { r += 100.f; done = true; }             // flagpole: strong, dominant reward
+    else if (is_win()) { r += 100.f; done = true; won_ = true; } // flagpole: strong, dominant reward
     else if (stall_ >= STALL_LIMIT) { r = dense - 10.f; done = true; }  // stuck: give up this life
     else if (steps_ >= MAX_STEPS) { done = true; }
 
