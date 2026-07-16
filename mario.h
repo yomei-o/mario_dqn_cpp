@@ -1,11 +1,11 @@
 #pragma once
 // A gym-style RL wrapper around the headless NES, specialized for Super Mario
 // Bros 1-1. Observation = a compact RAM-feature vector (Mario pos/vel/state +
-// nearby enemies + terrain grid + power). Reward is PROGRESS-FIRST: rightward
-// progress - time dominates (the recipe that yields a stable from-start greedy
-// run), plus a MODEST score term (coins/stomps/? blocks) and power-up shaping,
-// with death/stall/win terminals (see Env::step). This is what the DQN agent
-// sees and is optimized against.
+// nearby enemies + terrain grid + power). Reward = PROGRESS-FIRST + STOMP: rightward
+// progress - time dominates, plus an IMMEDIATE bonus for stomping an enemy (on the
+// forward line, unlike a mushroom detour), with death/stall/win terminals. No item
+// (mushroom/coin) reward -- their payoff is delayed/multi-step and hard to credit.
+// See Env::step. This is what the DQN agent sees and is optimized against.
 #include "nes.h"
 #include <vector>
 #include <string>

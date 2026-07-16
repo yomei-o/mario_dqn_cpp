@@ -213,36 +213,19 @@ float Env::step(int action, bool& done) {
     // cut the episode short when the agent is stuck against a pipe/pit.
     if (x > max_x_) { max_x_ = x; stall_ = 0; } else { ++stall_; }
 
-    // --- PROGRESS-FIRST reward (restored) + modest score --------------------
-    // Reverted from the score-first experiment. Down-weighting progress to 0.3x +
-    // a big 4x score term + a near-enemy "jump" bonus made the agent good at
-    // isolated segments but WORSE at a single from-start greedy run (greedy 2017
-    // -> ~300, dying at a fixed early spot) -- the coherent chained policy fell
-    // apart. This restores the exact progress-first reward the saved 2017 net was
-    // trained on, so warm-starting from it stays STABLE, plus a MODEST score term
-    // so coins/stomps still count without dominating. Curriculum then extends the
-    // stable from-start policy toward the flag. (Active item-seeking = later, phase
-    // ii, via item-aware observations -- not via reward that breaks chaining.)
+    // --- PROGRESS-FIRST + STOMP-only reward ---------------------------------
+    // The user's insight: rewarding enemy STOMPS (not mushrooms/coins) is the clean
+    // signal. A stomp is ON the forward line (jump onto the Goomba while advancing)
+    // so it doesn't fight progress the way grabbing a mushroom does (that needs a
+    // detour: hit the block from below, wait for it to emerge, chase it) -- and its
+    // reward is IMMEDIATE (jump -> land -> score this step), so credit assignment is
+    // easy, unlike the delayed multi-step mushroom/block payoff. So: strong progress
+    // + an immediate stomp bonus, and NO item (mushroom/coin) reward at all.
     float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));   // full-weight progress - time
     float r = dense;
-
-    // Modest score gain (coins/stomps/? blocks): secondary to progress, small cap.
-    int sc = score_val();
-    r += std::min(25.f, 1.0f * std::max(0, sc - prev_score_));
-    prev_score_ = sc;
-
-    // Power-ups, valued by MARIO'S STATE (the user's insight: small Mario dies on
-    // an enemy hit, big Mario only shrinks -- so a mushroom matters far more when
-    // small). The death/hit asymmetry below is already state-dependent (small ->
-    // -50 death, big -> -12 shrink); here we also make the PICKUP state-dependent:
-    //   small->big (first mushroom) = a survival buffer  -> big reward (+50)
-    //   big->fire  (flower)         = already safe, bonus -> small reward (+20)
-    // Power is in the observation (idx 89), so the policy can act state-aware:
-    // careful/seek-mushroom when small, bolder when big.
-    int pw = power_state();
-    if (pw > prev_power_) r += (prev_power_ == 0) ? 50.f : 20.f;
-    else if (pw < prev_power_) r -= 12.f;       // got hit, shrank (small Mario would instead DIE -> -50)
-    prev_power_ = pw;
+    if (stomped_) r += 20.f;                    // defeated an enemy -> clears the path forward
+    prev_score_ = score_val();                  // kept for logging (not rewarded)
+    prev_power_ = power_state();                 // kept for the obs power feature (not rewarded)
 
     done = false;
     if (is_dead()) { r = dense - 50.f; done = true; }           // pit/enemy death: clearly bad
