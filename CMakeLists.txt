@@ -32,11 +32,18 @@ add_executable(mario_dqn mario_dqn.cpp mario.cpp nes.cpp autograd.cpp ${LAINES_S
 target_include_directories(mario_dqn PRIVATE . third_party/laines/include)
 if (MSVC)
     target_compile_options(mario_dqn PRIVATE /O2 /permissive-)
-    target_link_libraries(mario_dqn PRIVATE winmm)   # timeBeginPeriod (CPU-throttle sleep accuracy)
 else()
     target_compile_options(mario_dqn PRIVATE -O2)
     find_package(Threads REQUIRED)
     target_link_libraries(mario_dqn PRIVATE Threads::Threads)
+endif()
+# The CPU-throttle uses timeBeginPeriod on Windows (guarded by #ifdef _WIN32),
+# which lives in winmm. _WIN32 is defined by ALL Windows toolchains (MSVC AND
+# MinGW/w64devkit), so link winmm for any Windows build -- not just MSVC. On
+# Linux/macOS/Emscripten _WIN32 is undefined and the throttle uses portable
+# std::this_thread::sleep_for, so winmm must NOT be linked there.
+if (WIN32)
+    target_link_libraries(mario_dqn PRIVATE winmm)
 endif()
 
 # Static file server for the results viewer (cpp-httplib, single-header MIT).
