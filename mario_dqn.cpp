@@ -79,8 +79,10 @@ struct CpuThrottle {
 // Hidden width of the Q-net MLP. Bumped 256 -> 512 for more capacity to hold the
 // whole-level run AND item/stomp skills at once; the 256-hidden mario_best.bin is
 // carried in function-preserving via QNet::load_widen (net2wider).
-static const int HID = 512;
-static const int OLD_HID = 256;   // width of the frozen 2017 base inside the widened net
+static const int HID = 256;       // back to the 2017 net's native width for a clean, exact
+                                  // warm-start (load_expand) + full training to EXTEND reach
+                                  // toward the 1-1 flag (no items -> no fine-tune instability).
+static const int OLD_HID = 256;   // width of the frozen 2017 base inside a widened net (unused at HID=256)
 
 // Freeze the 2017 base: zero the gradients of every weight that defines the old
 // policy's computation path, so ONLY the net2wider-added units train. Kept fixed:
