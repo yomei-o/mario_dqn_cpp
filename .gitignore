@@ -15,6 +15,7 @@ build/
 
 # training logs
 *.log
+*.err
 
 # python / editor
 __pycache__/

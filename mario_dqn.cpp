@@ -16,9 +16,64 @@
 #include <deque>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <thread>
+
+#ifdef _WIN32
+// Raise the system timer resolution to 1ms so std::this_thread::sleep_for is
+// accurate (Windows' default ~15.6ms granularity otherwise makes short sleeps
+// overshoot, over-throttling the trainer). Declared here to avoid pulling in
+// the whole <windows.h>; winmm is linked in CMakeLists.
+extern "C" __declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int);
+extern "C" __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
+#endif
 
 using namespace ag;
 using namespace rl;
+
+// CPU throttle: keep long training from pinning a core at 100% so the machine
+// stays usable. Targets a fraction of wall-clock as busy time (default 0.8 =>
+// ~80% CPU); override with env var MARIO_CPU (e.g. 0.5, or 1.0 to disable).
+// Self-calibrating via CUMULATIVE busy/slept accounting: after each ~100ms chunk
+// of work it sleeps the running deficit between the target sleep total and what
+// it has actually slept. Because it measures ACTUAL sleep (Windows' ~15ms timer
+// granularity makes short sleeps overshoot) and corrects against the cumulative
+// target, the average busy fraction converges to `util` regardless of machine
+// speed or OS sleep rounding.
+struct CpuThrottle {
+    double util = 0.8;
+    bool on = true;
+    std::chrono::steady_clock::time_point mark;   // start of the current busy accrual
+    double busy_total = 0.0, slept_total = 0.0;   // cumulative seconds
+    CpuThrottle() {
+        if (const char* e = std::getenv("MARIO_CPU")) util = std::atof(e);
+        on = util > 0.0 && util < 1.0;
+#ifdef _WIN32
+        if (on) timeBeginPeriod(1);   // accurate short sleeps (restored in dtor)
+#endif
+        mark = std::chrono::steady_clock::now();
+    }
+#ifdef _WIN32
+    ~CpuThrottle() { if (on) timeEndPeriod(1); }
+#endif
+    // Call once per env step. No-op until ~100ms of busy time has accrued, so the
+    // resulting sleep is comfortably larger than the OS timer granularity.
+    void maybe_sleep() {
+        if (!on) return;
+        auto now = std::chrono::steady_clock::now();
+        double chunk = std::chrono::duration<double>(now - mark).count();
+        if (chunk < 0.1) return;                       // keep accruing (don't reset mark)
+        busy_total += chunk;
+        double target_slept = busy_total * (1.0 - util) / util;
+        double need = target_slept - slept_total;      // cumulative deficit (self-correcting)
+        if (need > 0.0) {
+            auto s0 = std::chrono::steady_clock::now();
+            std::this_thread::sleep_for(std::chrono::duration<double>(need));
+            slept_total += std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
+        }
+        mark = std::chrono::steady_clock::now();
+    }
+};
 
 static int argmax_row(const std::vector<float>& q, int off, int A) {
     int best = 0;
@@ -361,6 +416,11 @@ int main(int argc, char** argv) {
         std::printf("   checkpoint x-range: %d .. %d\n",
                     env.checkpoint_x(0), env.checkpoint_x(n_ckpt - 1));
 
+    CpuThrottle throttle;   // ~80% CPU by default (env MARIO_CPU to override)
+    std::printf("   cpu throttle: %s (target util=%.2f, env MARIO_CPU)\n",
+                throttle.on ? "on" : "off", throttle.util);
+    std::fflush(stdout);    // surface config immediately when logging to a file
+
     long total_steps = 0;
     std::deque<int> recent_x;   // last-50 episode max distances
     // Checkpoint by a distance+score composite so that, among policies reaching a
@@ -416,6 +476,7 @@ int main(int argc, char** argv) {
                 opt.zero_grad(); loss.backward(); clip_grads(params, 10.f); opt.step();
             }
             if (total_steps % target_sync == 0) target.copy_from(online);
+            throttle.maybe_sleep();   // yield CPU so the machine stays usable
         }
 
         recent_x.push_back(ep_max_x);

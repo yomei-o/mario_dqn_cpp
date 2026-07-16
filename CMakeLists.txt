@@ -32,6 +32,7 @@ add_executable(mario_dqn mario_dqn.cpp mario.cpp nes.cpp autograd.cpp ${LAINES_S
 target_include_directories(mario_dqn PRIVATE . third_party/laines/include)
 if (MSVC)
     target_compile_options(mario_dqn PRIVATE /O2 /permissive-)
+    target_link_libraries(mario_dqn PRIVATE winmm)   # timeBeginPeriod (CPU-throttle sleep accuracy)
 else()
     target_compile_options(mario_dqn PRIVATE -O2)
     find_package(Threads REQUIRED)
