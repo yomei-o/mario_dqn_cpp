@@ -193,10 +193,16 @@ float Env::step(int action, bool& done) {
     for (int i = 0; i < FRAME_SKIP; ++i) nes::step_frame();
     ++steps_;
 
+    // Stomp = Mario landed on an enemy: score went up this step, and an enemy that
+    // was active and just ahead sat at/below Mario (he was poised above it). We do
+    // NOT require the enemy to have vanished -- a stomped Goomba lingers a few
+    // frames in a "flattened" state, so requiring instant removal missed real
+    // stomps. (A coin grabbed while directly above an enemy is a rare false hit and
+    // still a fine "good" demo, so acceptable.)
     stomped_ = false;
     if (score_val() > psc)
         for (int i = 0; i < 5; ++i)
-            if (pa[i] && RAM(0x000F + i) == 0 && prx[i] >= -16 && prx[i] <= 48 && ppy <= pey[i] + 8) { stomped_ = true; break; }
+            if (pa[i] && prx[i] >= -24 && prx[i] <= 56 && ppy <= pey[i] + 4) { stomped_ = true; break; }
 
     int x = level_x();
     float dx = (float)(x - prev_x_);
