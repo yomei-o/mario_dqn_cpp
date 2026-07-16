@@ -519,6 +519,37 @@ int main(int argc, char** argv) {
                     (int)eligible_ckpts.size(), n_ckpt, ckpt_xmax);
     std::fflush(stdout);
 
+    // Imitation seed: if a first-screen demonstration exists (demo_item.bin -- a
+    // from-boot action sequence that hits a ? block / grabs the mushroom, captured
+    // below and promoted by hand), replay it and push its high-reward transitions
+    // into replay MANY times, so those behaviors are learnable from step 0 instead
+    // of left to random discovery. This is how we "definitely teach" the basics.
+    {
+        std::vector<uint8_t> imit;
+        if (load_actions("demo_item.bin", imit) && !imit.empty()) {
+            const int reps = 15;
+            for (int rep = 0; rep < reps; ++rep) {
+                std::vector<float> si = env.reset();
+                bool di = false;
+                for (size_t t = 0; t < imit.size() && !di; ++t) {
+                    float ri = env.step(imit[t], di);
+                    const std::vector<float>& ni = env.observation();
+                    replay.push({si, ni, imit[t], ri, di});
+                    si = ni;
+                }
+            }
+            std::printf("   imitation: seeded replay from demo_item.bin (%d actions x%d reps)\n",
+                        (int)imit.size(), reps);
+            std::fflush(stdout);
+        }
+    }
+
+    // Item-capture: save the SHORTEST from-boot sequence that grabs a power-up
+    // (reach a ? block -> hit -> mushroom), ending right after the grab. Promote
+    // the best of these to demo_item.bin to drive the imitation seed above.
+    const std::string item_path = "demo_item_" + std::to_string(seed_val) + ".bin";
+    int best_item_len = 1 << 30;
+
     for (int ep = 1; ep <= episodes; ++ep) {
         // Curriculum: a decreasing fraction of episodes start at a checkpoint near
         // the frontier; the rest start from x=0 so the full policy stays practiced.
@@ -533,7 +564,8 @@ int main(int argc, char** argv) {
         }
         bool done = false;
         float ep_ret = 0; int ep_max_x = 0;
-        std::vector<uint8_t> ep_actions;  // this episode's actions (for win-capture)
+        std::vector<uint8_t> ep_actions;  // this episode's actions (for win/item capture)
+        int start_power = env.power(), grab_idx = -1;   // for item-capture (power-up grabbed?)
         while (!done) {
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
             int a = (ag::randf() < eps) ? (int)(ag::randf() * A) % A : greedy_action(online, s);
@@ -541,6 +573,7 @@ int main(int argc, char** argv) {
             bool d;
             float r = env.step(a, d);
             ep_actions.push_back((uint8_t)a);
+            if (grab_idx < 0 && env.power() > start_power) grab_idx = (int)ep_actions.size() - 1;  // mushroom/flower grabbed
             const std::vector<float>& ns = env.observation();
             ep_ret += r; ep_max_x = std::max(ep_max_x, env.mario_x());
             replay.push({s, ns, a, r, d});
@@ -586,6 +619,26 @@ int main(int argc, char** argv) {
                 save_actions(win_path, seq);
                 std::printf("FLAG ep %d  from_ckpt %d (prefix %d) + %d self actions = %d total -> %s\n",
                             ep, ep_ckpt, prefix, (int)ep_actions.size(), (int)seq.size(), win_path.c_str());
+                std::fflush(stdout);
+            }
+        }
+
+        // Item grabbed: save the shortest from-boot sequence ending right after the
+        // grab -> a compact first-screen demonstration (block hit -> mushroom).
+        if (grab_idx >= 0) {
+            int prefix = (ep_ckpt >= 0) ? env.checkpoint_demo_len(ep_ckpt) : 0;
+            int total = prefix + grab_idx + 1;
+            if (total < best_item_len) {
+                best_item_len = total;
+                std::vector<uint8_t> seq;
+                if (prefix > 0) {
+                    const auto& d = env.demo_actions();
+                    seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
+                }
+                seq.insert(seq.end(), ep_actions.begin(), ep_actions.begin() + (grab_idx + 1));
+                save_actions(item_path, seq);
+                std::printf("ITEM ep %d  from_ckpt %d (prefix %d) + grab@%d = %d actions -> %s\n",
+                            ep, ep_ckpt, prefix, grab_idx, (int)seq.size(), item_path.c_str());
                 std::fflush(stdout);
             }
         }
