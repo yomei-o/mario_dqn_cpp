@@ -177,10 +177,26 @@ const std::vector<float>& Env::reset_to_checkpoint(int k) {
 }
 
 float Env::step(int action, bool& done) {
+    // Snapshot enemy state BEFORE advancing, so we can detect a stomp this step:
+    // an enemy that was active and just ahead of / below Mario, gone after the
+    // frames with a score gain, while Mario was above it = defeated by a stomp
+    // (vs merely scrolling off-screen behind, which we exclude by the x window).
+    int pa[5], prx[5], pey[5], ppy = player_y(), psc = score_val();
+    for (int i = 0; i < 5; ++i) {
+        pa[i]  = RAM(0x000F + i) != 0;
+        prx[i] = enemy_level_x(i) - level_x();
+        pey[i] = RAM(0x00CF + i);
+    }
+
     uint8_t btn = action_buttons(action);
     nes::set_buttons(0, btn);
     for (int i = 0; i < FRAME_SKIP; ++i) nes::step_frame();
     ++steps_;
+
+    stomped_ = false;
+    if (score_val() > psc)
+        for (int i = 0; i < 5; ++i)
+            if (pa[i] && RAM(0x000F + i) == 0 && prx[i] >= -16 && prx[i] <= 48 && ppy <= pey[i] + 8) { stomped_ = true; break; }
 
     int x = level_x();
     float dx = (float)(x - prev_x_);

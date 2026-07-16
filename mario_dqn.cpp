@@ -360,6 +360,63 @@ static int evalnet(const char* rom, const char* weights) {
     return 0;
 }
 
+// Brute-force the FIRST power-up grab (the hard bootstrap the user flagged: an
+// agent never learns to hit a ? block until it has hit one at least once). No
+// network -- just the (cheap) emulator: from the level start and each early
+// checkpoint, run jump-biased random rollouts until one grabs a mushroom/flower
+// (power increases), then save the FROM-BOOT sequence to demo_item.bin. That
+// demonstration then drives the imitation seed so training learns it reliably.
+static int finditem(const char* rom) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    bool have_demo = env.load_demo("demo.bin");
+    if (have_demo) env.build_curriculum(24);
+    int nck = env.num_checkpoints();
+    std::vector<int> starts;                 // -1 = from level start
+    starts.push_back(-1);
+    for (int k = 0; k < nck; ++k) if (env.checkpoint_x(k) <= 1200) starts.push_back(k);
+    std::printf("finditem: %d start points (from-start + %d early checkpoints x<=1200)\n",
+                (int)starts.size(), (int)starts.size() - 1);
+    seed(20260716);
+    auto biased = []() {                     // favor jump-right so blocks get hit / enemies stomped
+        float u = ag::randf();
+        if (u < 0.40f) return (int)mario::A_RIGHT_A;
+        if (u < 0.60f) return (int)mario::A_RIGHT_AB;
+        if (u < 0.80f) return (int)mario::A_RIGHT;
+        if (u < 0.90f) return (int)mario::A_A;
+        return (int)mario::A_RIGHT_B;
+    };
+    const int HORIZON = 90, MAX_ATTEMPTS = 8000;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt) {
+        int k = starts[(int)(ag::randf() * starts.size()) % (int)starts.size()];
+        int prefix = 0;
+        if (k < 0) env.reset(); else { env.reset_to_checkpoint(k); prefix = env.checkpoint_demo_len(k); }
+        int sp = env.power();
+        std::vector<uint8_t> acts;
+        bool done = false;
+        for (int t = 0; t < HORIZON && !done; ++t) {
+            int a = biased();
+            env.step(a, done);
+            acts.push_back((uint8_t)a);
+            if (env.power() > sp) {          // grabbed a power-up!
+                std::vector<uint8_t> seq;
+                if (prefix > 0) {
+                    const auto& d = env.demo_actions();
+                    seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
+                }
+                seq.insert(seq.end(), acts.begin(), acts.end());
+                save_actions("demo_item.bin", seq);
+                std::printf("finditem: FOUND on attempt %d (start_ckpt=%d prefix=%d + %d rollout = %d actions, x=%d) -> demo_item.bin\n",
+                            attempt, k, prefix, (int)acts.size(), (int)seq.size(), env.mario_x());
+                return 0;
+            }
+        }
+        if (attempt % 300 == 0) { std::printf("  finditem: %d attempts, still searching...\n", attempt); std::fflush(stdout); }
+    }
+    std::printf("finditem: no power-up found within budget\n");
+    return 1;
+}
+
 static int envtest(const char* rom) {
     mario::Env env;
     if (!env.init(rom)) return 1;
@@ -413,6 +470,8 @@ int main(int argc, char** argv) {
         return recorddemo(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                           argc > 3 ? argv[3] : "demo_win_0.bin",
                           argc > 4 ? argv[4] : "web/run.bin");
+    if (argc > 1 && std::strcmp(argv[1], "finditem") == 0)     // brute-force a first power-up grab -> demo_item.bin
+        return finditem(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
     if (argc > 1 && std::strcmp(argv[1], "eval") == 0)
         return evalnet(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                        argc > 3 ? argv[3] : "mario_best.bin");
@@ -525,9 +584,11 @@ int main(int argc, char** argv) {
     // into replay MANY times, so those behaviors are learnable from step 0 instead
     // of left to random discovery. This is how we "definitely teach" the basics.
     {
-        std::vector<uint8_t> imit;
-        if (load_actions("demo_item.bin", imit) && !imit.empty()) {
-            const int reps = 15;
+        const char* demos[] = {"demo_item.bin", "demo_stomp.bin"};   // mushroom + Goomba-stomp
+        const int reps = 15;
+        for (const char* dp : demos) {
+            std::vector<uint8_t> imit;
+            if (!load_actions(dp, imit) || imit.empty()) continue;
             for (int rep = 0; rep < reps; ++rep) {
                 std::vector<float> si = env.reset();
                 bool di = false;
@@ -538,17 +599,19 @@ int main(int argc, char** argv) {
                     si = ni;
                 }
             }
-            std::printf("   imitation: seeded replay from demo_item.bin (%d actions x%d reps)\n",
-                        (int)imit.size(), reps);
+            std::printf("   imitation: seeded replay from %s (%d actions x%d reps)\n",
+                        dp, (int)imit.size(), reps);
             std::fflush(stdout);
         }
     }
 
-    // Item-capture: save the SHORTEST from-boot sequence that grabs a power-up
-    // (reach a ? block -> hit -> mushroom), ending right after the grab. Promote
-    // the best of these to demo_item.bin to drive the imitation seed above.
-    const std::string item_path = "demo_item_" + std::to_string(seed_val) + ".bin";
-    int best_item_len = 1 << 30;
+    // Capture SHORTEST from-boot sequences for the key first-screen skills, ending
+    // right after the event: a power-up grab (-> demo_item_<seed>.bin) and an enemy
+    // stomp (-> demo_stomp_<seed>.bin). Promote the best of each to demo_item.bin /
+    // demo_stomp.bin to drive the imitation seed above.
+    const std::string item_path  = "demo_item_"  + std::to_string(seed_val) + ".bin";
+    const std::string stomp_path = "demo_stomp_" + std::to_string(seed_val) + ".bin";
+    int best_item_len = 1 << 30, best_stomp_len = 1 << 30;
 
     for (int ep = 1; ep <= episodes; ++ep) {
         // Curriculum: a decreasing fraction of episodes start at a checkpoint near
@@ -566,6 +629,7 @@ int main(int argc, char** argv) {
         float ep_ret = 0; int ep_max_x = 0;
         std::vector<uint8_t> ep_actions;  // this episode's actions (for win/item capture)
         int start_power = env.power(), grab_idx = -1;   // for item-capture (power-up grabbed?)
+        int stomp_idx = -1;                              // for stomp-capture (enemy defeated?)
         while (!done) {
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
             int a = (ag::randf() < eps) ? (int)(ag::randf() * A) % A : greedy_action(online, s);
@@ -574,6 +638,7 @@ int main(int argc, char** argv) {
             float r = env.step(a, d);
             ep_actions.push_back((uint8_t)a);
             if (grab_idx < 0 && env.power() > start_power) grab_idx = (int)ep_actions.size() - 1;  // mushroom/flower grabbed
+            if (stomp_idx < 0 && env.stomped()) stomp_idx = (int)ep_actions.size() - 1;            // enemy stomped
             const std::vector<float>& ns = env.observation();
             ep_ret += r; ep_max_x = std::max(ep_max_x, env.mario_x());
             replay.push({s, ns, a, r, d});
@@ -639,6 +704,26 @@ int main(int argc, char** argv) {
                 save_actions(item_path, seq);
                 std::printf("ITEM ep %d  from_ckpt %d (prefix %d) + grab@%d = %d actions -> %s\n",
                             ep, ep_ckpt, prefix, grab_idx, (int)seq.size(), item_path.c_str());
+                std::fflush(stdout);
+            }
+        }
+
+        // Enemy stomped: save the shortest from-boot sequence ending right after
+        // the stomp -> a compact "defeat a Goomba" demonstration.
+        if (stomp_idx >= 0) {
+            int prefix = (ep_ckpt >= 0) ? env.checkpoint_demo_len(ep_ckpt) : 0;
+            int total = prefix + stomp_idx + 1;
+            if (total < best_stomp_len) {
+                best_stomp_len = total;
+                std::vector<uint8_t> seq;
+                if (prefix > 0) {
+                    const auto& d = env.demo_actions();
+                    seq.assign(d.begin(), d.begin() + std::min<size_t>(prefix, d.size()));
+                }
+                seq.insert(seq.end(), ep_actions.begin(), ep_actions.begin() + (stomp_idx + 1));
+                save_actions(stomp_path, seq);
+                std::printf("STOMP ep %d  from_ckpt %d (prefix %d) + stomp@%d = %d actions -> %s\n",
+                            ep, ep_ckpt, prefix, stomp_idx, (int)seq.size(), stomp_path.c_str());
                 std::fflush(stdout);
             }
         }

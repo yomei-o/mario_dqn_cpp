@@ -65,6 +65,7 @@ public:
     int coins() const;                         // coin counter
     int power() const;                         // 0=small 1=super 2=fire
     bool won() const { return won_; }           // did the episode just end at the flagpole?
+    bool stomped() const { return stomped_; }    // did this step just defeat an enemy (stomp)?
 
 private:
     std::vector<uint8_t> rom_;
@@ -77,6 +78,7 @@ private:
     int max_x_ = 0, stall_ = 0;                // for stagnation shaping
     int prev_score_ = 0, prev_power_ = 0;      // for score / power-up reward shaping
     bool won_ = false;                         // set when an episode ends at the flagpole
+    bool stomped_ = false;                     // set on a step that defeats an enemy (stomp)
     void boot();                               // title screen -> in-level play
     void apply_action_frames(int a);           // raw FRAME_SKIP advance (no reward/done)
     void build_obs();
