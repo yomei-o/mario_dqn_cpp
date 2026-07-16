@@ -23,3 +23,5 @@ __pycache__/
 .vs/
 .claude/
 *.user
+*.out
+!demo_clear_1-1.bin
