@@ -230,29 +230,27 @@ float Env::step(int action, bool& done) {
     // reward is IMMEDIATE (jump -> land -> score this step), so credit assignment is
     // easy, unlike the delayed multi-step mushroom/block payoff. So: strong progress
     // + an immediate stomp bonus, and NO item (mushroom/coin) reward at all.
-    // Full-speed progress - time (reverted the anti-rush speed cap: capping dx at
-    // walking pace removed the speed needed to cover ground / clear gaps and pinned
-    // reach at ~1441, below the 2228 this full-speed + evade reward reached).
+    // Full-speed progress - time (reverted the softer/anti-rush tweaks: they pinned
+    // reach below 2228). Do NOT cap dx (dash-jumps need speed).
     float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));
     float r = dense;
-    if (stomped_) r += 12.f;                    // defeated an enemy -> clears the path (risky for small Mario)
+    // Enemy handling: now reward STOMPING more than evading. A big evade-jump over
+    // the pit+Goomba tends to overshoot/mistime; landing ON the Goomba (stomp) is a
+    // smaller, more controlled jump and clears the enemy for good. Stomping is the
+    // harder skill, so weight it up to make the agent pursue it. Evade still counts
+    // (a valid pass) but less.
+    if (stomped_) r += 25.f;                    // stomped an enemy (the harder, wanted skill)
     else {
-        // Jump-over / evade (user's idea): an enemy that was just ahead is now
-        // BEHIND, still alive, while Mario is airborne -> he safely cleared it.
-        // Rewarded MORE than a stomp: for small Mario, jumping over is easier and
-        // safer (a mis-stomp is death), so we steer toward the safe evade. Outcome
-        // -based + tied to forward progress (enemy must go ahead->behind) -> not
-        // farmable.
-        if (float_state() == 0x01)
+        if (float_state() == 0x01)              // airborne + an enemy went ahead->behind = jumped over
             for (int i = 0; i < 5; ++i)
                 if (pa[i] && RAM(0x000F + i) != 0 && prx[i] >= 0 && prx[i] <= 48 &&
-                    (enemy_level_x(i) - x) < 0) { r += 25.f; break; }
+                    (enemy_level_x(i) - x) < 0) { r += 10.f; break; }
     }
     prev_score_ = score_val();                  // kept for logging (not rewarded)
     prev_power_ = power_state();                 // kept for the obs power feature (not rewarded)
 
     done = false;
-    if (is_dead()) { r = dense - 50.f; done = true; }           // pit/enemy death: clearly bad
+    if (is_dead()) { r = dense - 50.f; done = true; }           // pit/enemy death (reverted -100 -> -50: -100 was over-timid, the agent stopped jumping and stalled ~722; -50 jumps and held 2228)
     else if (is_win()) { r += 100.f; done = true; won_ = true; } // flagpole: strong, dominant reward
     else if (stall_ >= STALL_LIMIT) { r = dense - 10.f; done = true; }  // stuck: give up this life
     else if (steps_ >= MAX_STEPS) { done = true; }
@@ -310,6 +308,23 @@ void Env::build_obs() {
     // Power state (0 small / 0.5 super / 1 fire): lets the agent behave more
     // boldly when big (a hit costs power, not a life) and value keeping it.
     obs_[19 + TILE_N] = std::min(1.f, power_state() / 2.f);
+
+    // Nearest-hazard-ahead distance (speed-control aid): the closer of the nearest
+    // active enemy ahead and the nearest pit edge ahead, normalized to [0,1] over a
+    // ~1-screen lookahead (1 = clear/far, 0 = right here). A single clean "danger
+    // proximity" signal so the policy can slow/jump when it's small and sprint when
+    // it's ~1 -- the missing input for context-dependent speed.
+    const int LOOK = 160;
+    int hz = LOOK;
+    for (int i = 0; i < 5; ++i) {
+        if (RAM(0x000F + i) == 0) continue;
+        int rx = enemy_level_x(i) - lx;
+        if (rx >= 0 && rx < hz) hz = rx;
+    }
+    for (int c = 1; c < TILE_COLS; ++c) {                 // first pit column ahead (empty ground cell)
+        if (obs_[base + c * TILE_ROWS + (TILE_ROWS - 1)] == 0.f) { if (c * 16 < hz) hz = c * 16; break; }
+    }
+    obs_[19 + TILE_N + 1 + TILE_N] = std::min(1.f, hz / (float)LOOK);
 }
 
 }  // namespace mario
