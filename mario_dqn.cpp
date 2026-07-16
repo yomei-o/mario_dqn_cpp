@@ -804,6 +804,9 @@ int main(int argc, char** argv) {
                 best_metric = metric; best_x = gx; best_score = gs;
                 best.copy_from(online); best.save(out_path.c_str());
             }
+            // Also save the CURRENT (not just best) net every eval, so its live
+            // greedy behavior can be recorded/watched even while it's below 2017.
+            online.save(("mario_latest_" + std::to_string(seed_val) + ".bin").c_str());
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
             std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  score %4d  power %d  best_greedy %4d  best_score %4d  eps %.2f  steps %ld\n",
                         ep, ep_ret, ep_max_x, avg_x, gx, gs, gp, best_x, best_score, eps, total_steps);
