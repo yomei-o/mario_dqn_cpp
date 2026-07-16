@@ -80,6 +80,22 @@ struct CpuThrottle {
 // whole-level run AND item/stomp skills at once; the 256-hidden mario_best.bin is
 // carried in function-preserving via QNet::load_widen (net2wider).
 static const int HID = 512;
+static const int OLD_HID = 256;   // width of the frozen 2017 base inside the widened net
+
+// Freeze the 2017 base: zero the gradients of every weight that defines the old
+// policy's computation path, so ONLY the net2wider-added units train. Kept fixed:
+// all inputs -> old hidden-1 (W1 cols < oh), old hidden biases, all hidden-1 ->
+// old hidden-2 (W2 cols < oh), old hidden-2 -> output (W3 rows < oh), and b3. The
+// new units add a trainable RESIDUAL to the output; the old path is invariant, so
+// the base run-the-level skill provably cannot be destroyed by fine-tuning.
+static void freeze_base_grads(std::vector<Tensor>& ps, int sdim, int hdim, int adim, int oh) {
+    auto& gW1 = ps[0].grad(); for (int i = 0; i < sdim; ++i) for (int j = 0; j < oh; ++j) gW1[i * hdim + j] = 0.f;
+    auto& gb1 = ps[1].grad(); for (int j = 0; j < oh; ++j) gb1[j] = 0.f;
+    auto& gW2 = ps[2].grad(); for (int i = 0; i < hdim; ++i) for (int j = 0; j < oh; ++j) gW2[i * hdim + j] = 0.f;
+    auto& gb2 = ps[3].grad(); for (int j = 0; j < oh; ++j) gb2[j] = 0.f;
+    auto& gW3 = ps[4].grad(); for (int i = 0; i < oh; ++i) for (int a = 0; a < adim; ++a) gW3[i * adim + a] = 0.f;
+    auto& gb3 = ps[5].grad(); for (int a = 0; a < adim; ++a) gb3[a] = 0.f;
+}
 
 static int argmax_row(const std::vector<float>& q, int off, int A) {
     int best = 0;
@@ -534,6 +550,9 @@ int main(int argc, char** argv) {
     // Warm start: a same-width run checkpoint via load_expand, else the 256-hidden
     // base mario_best.bin via load_widen (net2wider -> 512, function-preserving).
     bool warm = online.load_expand(out_path.c_str()) || online.load_widen("mario_best.bin");
+    // Freeze the 2017 base (first OLD_HID hidden units) and train only the widened
+    // capacity as an additive residual -> the base run skill can't be destroyed.
+    const bool freeze_base = warm && HID > OLD_HID;
     float eps_start = arg_eps >= 0.f ? arg_eps : (warm ? 0.1f : 1.0f);
     float eps_decay_steps = warm ? 100000.f : 250000.f;
     opt.lr = arg_lr > 0.f ? arg_lr : (warm ? 1.0e-4f : 2.5e-4f);
@@ -574,7 +593,8 @@ int main(int argc, char** argv) {
     // while distance still dominates, keeping the flag as the primary objective.
     int best_x = 0, best_score = 0, best_metric = -1;
     if (warm) { best_x = greedy_episode(online, env, &best_score); best_metric = best_x + best_score; }
-    std::printf("   warm-start greedy x=%d score=%d\n", best_x, best_score);
+    std::printf("   warm-start greedy x=%d score=%d | freeze_base=%d (HID=%d base=%d)\n",
+                best_x, best_score, (int)freeze_base, HID, OLD_HID);
 
     // Win-capture: when a training episode reaches the flagpole, save the FROM-BOOT
     // action sequence that produced it (demo prefix up to its start checkpoint +
@@ -696,7 +716,9 @@ int main(int argc, char** argv) {
                     tgt.data()[b * A + tr.a] = tr.r + boot;
                 }
                 auto loss = mul_scalar(sum(huber(sub(q, tgt))), 1.0f / batch);
-                opt.zero_grad(); loss.backward(); clip_grads(params, 10.f); opt.step();
+                opt.zero_grad(); loss.backward();
+                if (freeze_base) freeze_base_grads(params, S, HID, A, OLD_HID);
+                clip_grads(params, 10.f); opt.step();
             }
             if (total_steps % target_sync == 0) target.copy_from(online);
             throttle.maybe_sleep();   // yield CPU so the machine stays usable
