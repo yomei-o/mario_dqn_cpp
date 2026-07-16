@@ -455,6 +455,50 @@ static int finditem(const char* rom) {
     return (found_item || found_stomp) ? 0 : 1;
 }
 
+// Diagnostic: run a net greedily and, around the stall region (x >= 2100), dump
+// what it SEES (terrain grid ahead, ? -blocks, hazard distance) and what it DECIDES
+// (chosen action + Q-values per action). Answers "is the wall in the observation?"
+// and "why doesn't the greedy policy jump it?" ('#'=solid '.'=open 'Q'=? -block;
+// rows top->bottom = screen rows 6..12, i.e., upper playfield down to the ground).
+static int probe(const char* rom, const char* weights) {
+    static const char* ACT[] = {"RIGHT", "RIGHT_A", "RIGHT_B", "RIGHT_AB", "A"};
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    QNet net(S, A, HID);
+    if (!net.load_expand(weights) && !net.load_widen(weights)) { std::printf("load failed: %s\n", weights); return 1; }
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    std::vector<float> s = env.reset();
+    const int base = 19, qbase = 19 + mario::Env::TILE_N + 1, hzi = 19 + 2 * mario::Env::TILE_N + 1;
+    bool done = false; int t = 0, printed = 0;
+    while (!done && t < 3000 && printed < 30) {
+        auto q = net.forward(Tensor::from(s, {1, S}, false));
+        int a = argmax_row(q.data(), 0, A);
+        int x = env.mario_x();
+        if (x >= 2100) {
+            int py = nes::ram(0x00CE), spd = (int)(signed char)nes::ram(0x0057), fs = nes::ram(0x001D);
+            std::printf("x=%4d y=%3d spd=%3d float=%d  ACT=%-8s  Q[", x, py, spd, fs, ACT[a]);
+            for (int k = 0; k < A; ++k) std::printf("%s%s=%.2f", k ? " " : "", ACT[k], q.data()[k]);
+            std::printf("]\n");
+            for (int r = 0; r < mario::Env::TILE_ROWS; ++r) {
+                std::printf("      ");
+                for (int c = 0; c < mario::Env::TILE_COLS; ++c) {
+                    bool solid = s[base + c * mario::Env::TILE_ROWS + r] > 0.5f;
+                    bool qb = s[qbase + c * mario::Env::TILE_ROWS + r] > 0.5f;
+                    std::printf("%c", qb ? 'Q' : (solid ? '#' : '.'));
+                }
+                std::printf("\n");
+            }
+            std::printf("      hazard-dist=%.2f (0=here,1=clear)\n", s[hzi]);
+            printed++;
+        }
+        env.step(a, done);
+        s = env.observation();
+        t++;
+    }
+    std::printf("probe end: final x=%d\n", env.mario_x());
+    return 0;
+}
+
 static int envtest(const char* rom) {
     mario::Env env;
     if (!env.init(rom)) return 1;
@@ -510,6 +554,9 @@ int main(int argc, char** argv) {
                           argc > 4 ? argv[4] : "web/run.bin");
     if (argc > 1 && std::strcmp(argv[1], "finditem") == 0)     // brute-force a first power-up grab -> demo_item.bin
         return finditem(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "probe") == 0)        // dump obs+Q around the stall region of a net
+        return probe(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
+                     argc > 3 ? argv[3] : "mario_best.bin");
     if (argc > 1 && std::strcmp(argv[1], "eval") == 0)
         return evalnet(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                        argc > 3 ? argv[3] : "mario_best.bin");

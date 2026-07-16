@@ -4,6 +4,34 @@
 読めば続きを進められるようにしてある。シリーズ全体は各リポジトリのREADME参照。
 
 ---
+## 🔴🔴 引き継ぎ（2026-07-16 夜, 家のClaudeへ） — probe診断の結論と次の一手
+
+### ブランチ状態
+- **main**: greedy 2228 チャンピオン（`mario_best.bin`, 160次元/隠れ256）＋ `demo_clear_1-1.bin`（スタート→旗の通しクリア行動列）。安定版。
+- **`exp/enemy-handling`（このブランチで作業中／push済み）**: 踏み+25・避け+10 の報酬 ＋ 「最寄りハザード距離」観測(STATE_DIM=**161**) ＋ **`probe`診断ツール**。greedy最高 **2228** で **x≈2226** で停滞。
+
+### ★probe診断の結論（今日の一番の収穫）
+`build/Release/mario_dqn.exe probe "$ROM" mario_best_run2.bin`（or `mario_best.bin`）で停滞地点をダンプ:
+- x=2226 に **前方col1が4ブロック高の"壊せないブロックの段差/壁"**。**地形格子に上端まで明確に映っている**（row6が空＝壁の上が見えている）→ **知覚の穴ではない**（「認識できてない」説は否定された）。
+- その状態の **Q値が全行動ほぼ横並び(64〜65, 差<1)**、spd≈0でジャンプに踏み切れず**ジッタ→90ステップ停滞→STALL_LIMITで時間切れ**（＝「勝手に時間切れ」の正体）。
+- 対照的に手前の階段登り(x≈2130)ではQ≈237〜318と高く綺麗に跳べている。
+- **結論: 知覚でなく "greedy方策がこの段差の跳び越えを学習できていない"**。探索(ε-greedy)では跳べて旗まで到達する（from-startクリアが出る）が、その行動が greedy に焼き付いていない。ユーザーの「ゴール時はそこを跳んでいる」証言と完全一致。
+- 注: 追加した `hazard-dist` 特徴は **敵と穴だけで壁/段差を検出しない**（この地点で1.00=clearと出る）。壁は地形格子側には映っている。
+
+### 次の一手（本命）＝ DQfD: 通しクリアの模倣シード
+- 「探索で引けた通しクリア（`demo_clear_1-1.bin` ≈ from-start 旗到達, 決定的に再現可）」を**リプレイに強く注入**して、この段差の跳びを含む正しい行動を **greedy に転写**する。
+- 既存インフラ: 学習ループ起動時の imitation seed は `demo_item.bin`/`demo_stomp.bin` ＋ `demos/*.bin` を env.reset()から再生して遷移を push する仕組みが既にある（`mario_dqn.cpp` の "Skill-demo LIBRARY" ブロック）。**`demo_clear_1-1.bin` を `demos/` に置く（or seed対象に追加）だけで通しクリアを焼き付けられる**。反復注入（毎エピソードでなく定期）や優先度リプレイと組むと尚良い。
+- 補助案: `hazard-dist` に「前方の高い solid（壁/段差）までの距離」も含める／停滞地点(x≈2226)前後のチェックポイント集中練習。
+
+### 実行メモ
+- ビルド: `cmake --build build --config Release --target mario_dqn`（MSVC。停止してから: 実行中はexeロックでLNK失敗する）
+- 診断: `build/Release/mario_dqn.exe probe "$ROM" <net.bin>`（x≥2100の観測+Q+選択行動を最大30ステップ表示）
+- 学習: `MARIO_CPU=1.0 build/Release/mario_dqn.exe "$ROM" <seed> <out.bin> <eps> <lr> <cp>`。warm-start=out.bin→無ければmario_best.bin(`load_widen`で160→161吸収)。全速+踏み25/避け10、死亡-50。
+- 3本並列＋監視は今日は手動Monitorで回していた（`train*.log`の `GREEDY_x`/`FLAG` を見る）。CPUは `MARIO_CPU`（既定0.8, 実験は1.0）。
+- ブラウザ再生: `server.exe`(:8080)＋`web/index.html`、録画は `record`(net)/`recorddemo`(行動列)。
+- ※ `mario_best_run*.bin`/`mario_latest_*.bin`/`demo_win_*.bin`/`train*.log`/`web/run.bin` は gitignore（ローカル生成・再現可）。実験中は毎回コミットしない方針（ユーザー指示）。2228ネットのバックアップは `mario_break2228.bin`。
+
+---
 ## 🔴 引き継ぎメモ（2026-07-16, 別マシン/別Claudeへ）
 
 **目標: 1-1を先頭から通しでgreedyクリア（フラッグポール x≈3160）＋道中で高得点・キノコ取得。**
