@@ -212,7 +212,7 @@ float Env::step(int action, bool& done) {
     // Power-ups: worth grabbing (a hit then costs power, not a life); losing power
     // is penalized but far less than an actual death.
     int pw = power_state();
-    if (pw > prev_power_) r += 30.f;            // grabbed a mushroom / fire flower
+    if (pw > prev_power_) r += 40.f;            // grabbed a mushroom / fire flower (phase ii: value items)
     else if (pw < prev_power_) r -= 12.f;       // got hit, dropped a power level
     prev_power_ = pw;
 
@@ -256,12 +256,20 @@ void Env::build_obs() {
     // profile ahead: flat ground = "00000 11", a pit = all zeros (jump the gap),
     // a pipe = solid cells stacking up from the ground (jump the obstacle). Using
     // fixed rows (vs Mario-relative) keeps the ground/landing visible mid-jump.
+    // Two grids over the same lookahead window (TILE_COLS x TILE_ROWS ahead of
+    // Mario, fixed screen rows): (1) occupancy -- 1 = solid; (2) ? -blocks -- 1 =
+    // an active question/coin block (SMB overworld metatiles 0xC0..0xC3; become
+    // 0x54 once hit). The ? -block grid lets the agent SEE which blocks above it
+    // are worth jumping into for coins / a mushroom (phase ii: items/score).
     int base = 19;
+    int qbase = 19 + TILE_N + 1;                      // ? -block grid, right after the power feature
     for (int c = 0; c < TILE_COLS; ++c) {
         int tx = lx + c * 16 + 8;                     // center of column c ahead
         for (int r = 0; r < TILE_ROWS; ++r) {
             int ty = 32 + (TILE_ROW0 + r) * 16 + 8;   // center of fixed screen row
-            obs_[base + c * TILE_ROWS + r] = tile_at(tx, ty) != 0 ? 1.f : 0.f;
+            int v = tile_at(tx, ty);
+            obs_[base + c * TILE_ROWS + r]  = v != 0 ? 1.f : 0.f;
+            obs_[qbase + c * TILE_ROWS + r] = (v >= 0xC0 && v <= 0xC3) ? 1.f : 0.f;
         }
     }
     // Power state (0 small / 0.5 super / 1 fire): lets the agent behave more

@@ -28,8 +28,9 @@ public:
     static constexpr int TILE_ROWS = 7;      // rows 6..12: covers the tallest pipe down to ground
     static constexpr int TILE_N = TILE_COLS * TILE_ROWS;
     // obs layout: [0..3] mario pos/vel/state, [4..18] 5 enemy slots,
-    // [19..19+TILE_N-1] tile grid, [19+TILE_N] power state (0 small/0.5 super/1 fire)
-    static constexpr int STATE_DIM = 19 + TILE_N + 1;
+    // [19..18+TILE_N] terrain grid (solid?), [19+TILE_N] power (0 small/0.5 super/1 fire),
+    // [20+TILE_N..19+2*TILE_N] ? -block grid (item/coin blocks to hit from below).
+    static constexpr int STATE_DIM = 19 + TILE_N + 1 + TILE_N;
     static constexpr int FRAME_SKIP = 4;
     static constexpr int MAX_STEPS = 1200;   // ~ episode time limit (env steps)
     static constexpr int STALL_LIMIT = 90;   // end episode after this many stalled steps

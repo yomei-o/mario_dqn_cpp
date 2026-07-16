@@ -88,16 +88,18 @@ static int greedy_action(QNet& net, const std::vector<float>& s) {
 
 // One fully-greedy rollout from the level start (honest skill metric). Returns
 // the max level-x reached; if out_score is given, also reports the final score.
-static int greedy_episode(QNet& net, mario::Env& env, int* out_score = nullptr) {
+static int greedy_episode(QNet& net, mario::Env& env, int* out_score = nullptr, int* out_power = nullptr) {
     std::vector<float> s = env.reset();
-    bool done = false; int mx = 0;
+    bool done = false; int mx = 0, mp = 0;
     while (!done) {
         int a = greedy_action(net, s);
         env.step(a, done);
         s = env.observation();
         mx = std::max(mx, env.mario_x());
+        mp = std::max(mp, env.power());        // highest power reached (1=grabbed a mushroom, 2=fire)
     }
     if (out_score) *out_score = env.score();
+    if (out_power) *out_power = mp;
     return mx;
 }
 
@@ -585,16 +587,16 @@ int main(int argc, char** argv) {
 
         // Checkpoint by GREEDY skill (not by exploration luck), like CartPole/Othello.
         if (ep % 25 == 0 && (int)replay.size() >= warmup) {
-            int gs = 0;
-            int gx = greedy_episode(online, env, &gs);
+            int gs = 0, gp = 0;
+            int gx = greedy_episode(online, env, &gs, &gp);
             int metric = gx + gs;
             if (metric > best_metric) {
                 best_metric = metric; best_x = gx; best_score = gs;
                 best.copy_from(online); best.save(out_path.c_str());
             }
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
-            std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  score %4d  best_greedy %4d  best_score %4d  eps %.2f  steps %ld\n",
-                        ep, ep_ret, ep_max_x, avg_x, gx, gs, best_x, best_score, eps, total_steps);
+            std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  score %4d  power %d  best_greedy %4d  best_score %4d  eps %.2f  steps %ld\n",
+                        ep, ep_ret, ep_max_x, avg_x, gx, gs, gp, best_x, best_score, eps, total_steps);
             std::fflush(stdout);
         }
     }
