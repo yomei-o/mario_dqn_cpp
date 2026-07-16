@@ -87,6 +87,47 @@ public:
         std::fclose(f);
         return true;
     }
+
+    // Net2Wider warm-start: load a checkpoint with a SMALLER input dim AND SMALLER
+    // hidden width into this (wider) net, PRESERVING the function (so greedy == the
+    // old policy at init) while adding capacity that trains up. New hidden units get
+    // random INCOMING weights (from the constructor's init, so they activate and get
+    // gradient) but ZERO OUTGOING weights (so they contribute nothing to the output
+    // initially -> function unchanged). New input rows feeding OLD hidden units are
+    // zeroed (the old net didn't see them). Assumes this net was just constructed
+    // (non-overwritten weights keep their random init). adim must match.
+    bool load_widen(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        auto rd = [&](std::vector<float>& v) -> bool {
+            int n = 0; if (std::fread(&n, sizeof(int), 1, f) != 1) return false;
+            v.resize(n); return (int)std::fread(v.data(), sizeof(float), n, f) == n;
+        };
+        std::vector<float> oW1, ob1, oW2, ob2, oW3, ob3;
+        bool ok = rd(oW1) && rd(ob1) && rd(oW2) && rd(ob2) && rd(oW3) && rd(ob3);
+        std::fclose(f);
+        if (!ok) return false;
+        int oh = (int)ob1.size();
+        if (oh <= 0 || (int)oW1.size() % oh != 0) return false;
+        int os = (int)oW1.size() / oh;                 // old sdim
+        if (os > sdim || oh > hdim || (int)ob3.size() != adim) return false;
+        auto& w1 = W1.data(); auto& B1 = b1.data();
+        auto& w2 = W2.data(); auto& B2 = b2.data();
+        auto& w3 = W3.data(); auto& B3 = b3.data();
+        // W1 [sdim x hdim]: old block; new-input rows over OLD-hidden cols -> 0.
+        for (int i = 0; i < os; ++i) for (int j = 0; j < oh; ++j) w1[i * hdim + j] = oW1[i * oh + j];
+        for (int i = os; i < sdim; ++i) for (int j = 0; j < oh; ++j) w1[i * hdim + j] = 0.f;
+        for (int j = 0; j < oh; ++j) B1[j] = ob1[j];
+        // W2 [hdim x hdim]: old block; NEW-hidden1 rows over OLD-hidden2 cols -> 0.
+        for (int i = 0; i < oh; ++i) for (int j = 0; j < oh; ++j) w2[i * hdim + j] = oW2[i * oh + j];
+        for (int i = oh; i < hdim; ++i) for (int j = 0; j < oh; ++j) w2[i * hdim + j] = 0.f;
+        for (int j = 0; j < oh; ++j) B2[j] = ob2[j];
+        // W3 [hdim x adim]: old block; NEW-hidden2 rows -> 0 (no output contribution).
+        for (int i = 0; i < oh; ++i) for (int a = 0; a < adim; ++a) w3[i * adim + a] = oW3[i * adim + a];
+        for (int i = oh; i < hdim; ++i) for (int a = 0; a < adim; ++a) w3[i * adim + a] = 0.f;
+        for (int a = 0; a < adim; ++a) B3[a] = ob3[a];
+        return true;
+    }
 };
 
 // Adam optimizer over a fixed parameter list.

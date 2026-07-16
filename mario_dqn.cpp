@@ -76,6 +76,11 @@ struct CpuThrottle {
     }
 };
 
+// Hidden width of the Q-net MLP. Bumped 256 -> 512 for more capacity to hold the
+// whole-level run AND item/stomp skills at once; the 256-hidden mario_best.bin is
+// carried in function-preserving via QNet::load_widen (net2wider).
+static const int HID = 512;
+
 static int argmax_row(const std::vector<float>& q, int off, int A) {
     int best = 0;
     for (int a = 1; a < A; ++a) if (q[off + a] > q[off + best]) best = a;
@@ -175,8 +180,8 @@ static int recorddemo(const char* rom, const char* actions_path, const char* out
 // nframes * w*h*3 bytes RGB (one NES frame per agent step).
 static int record(const char* rom, const char* weights, const char* out_path) {
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
-    QNet net(S, A, 256);
-    if (!net.load_expand(weights)) std::printf("(warning) could not load %s; using random net\n", weights);
+    QNet net(S, A, HID);
+    if (!net.load_expand(weights) && !net.load_widen(weights)) std::printf("(warning) could not load %s; using random net\n", weights);
     mario::Env env;
     if (!env.init(rom)) return 1;
     env.reset();
@@ -217,8 +222,8 @@ static int scoretest(const char* rom, const char* weights) {
         return s;
     };
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
-    QNet net(S, A, 256);
-    bool have = net.load_expand(weights);
+    QNet net(S, A, HID);
+    bool have = net.load_expand(weights) || net.load_widen(weights);
     mario::Env env;
     if (!env.init(rom)) return 1;
     std::vector<float> s = env.reset();
@@ -324,8 +329,8 @@ static int tilescan(const char* rom) {
 // demo is replayed by the curriculum to fast-forward episodes to the frontier.
 static int gendemo(const char* rom, const char* weights, const char* out) {
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
-    QNet net(S, A, 256);
-    if (!net.load_expand(weights)) { std::printf("could not load %s\n", weights); return 1; }
+    QNet net(S, A, HID);
+    if (!net.load_expand(weights) && !net.load_widen(weights)) { std::printf("could not load %s\n", weights); return 1; }
     mario::Env env;
     if (!env.init(rom)) return 1;
     std::vector<float> s = env.reset();
@@ -351,8 +356,8 @@ static int gendemo(const char* rom, const char* weights, const char* out) {
 // Used to pick the winner among parallel best-of-N workers' checkpoints.
 static int evalnet(const char* rom, const char* weights) {
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
-    QNet net(S, A, 256);
-    if (!net.load_expand(weights)) { std::printf("%s: load failed\n", weights); return 1; }
+    QNet net(S, A, HID);
+    if (!net.load_expand(weights) && !net.load_widen(weights)) { std::printf("%s: load failed\n", weights); return 1; }
     mario::Env env;
     if (!env.init(rom)) return 1;
     int sc = 0;
@@ -513,7 +518,7 @@ int main(int argc, char** argv) {
     const int train_freq = 4;   // gradient step every N env steps (Atari-DQN style; ~Nx faster wall-clock)
     const float eps_end = 0.1f;
 
-    QNet online(S, A, 256), target(S, A, 256), best(S, A, 256);
+    QNet online(S, A, HID), target(S, A, HID), best(S, A, HID);
     Adam opt(online.params(), 2.5e-4f);
     auto params = online.params();
     Replay replay(100000);
@@ -526,7 +531,9 @@ int main(int argc, char** argv) {
     // updates destroyed it (greedy-from-start collapsed 2017 -> ~400). So fine
     // -tune GENTLY: low LR + minimal exploration to adapt values without wrecking
     // the policy. Fresh (no checkpoint) training keeps the aggressive schedule.
-    bool warm = online.load_expand(out_path.c_str()) || online.load_expand("mario_best.bin");   // expands 89->90 dims
+    // Warm start: a same-width run checkpoint via load_expand, else the 256-hidden
+    // base mario_best.bin via load_widen (net2wider -> 512, function-preserving).
+    bool warm = online.load_expand(out_path.c_str()) || online.load_widen("mario_best.bin");
     float eps_start = arg_eps >= 0.f ? arg_eps : (warm ? 0.1f : 1.0f);
     float eps_decay_steps = warm ? 100000.f : 250000.f;
     opt.lr = arg_lr > 0.f ? arg_lr : (warm ? 1.0e-4f : 2.5e-4f);
