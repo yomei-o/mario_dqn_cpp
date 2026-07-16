@@ -18,6 +18,7 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
+#include <filesystem>
 
 #ifdef _WIN32
 // Raise the system timer resolution to 1ms so std::this_thread::sleep_for is
@@ -584,9 +585,20 @@ int main(int argc, char** argv) {
     // into replay MANY times, so those behaviors are learnable from step 0 instead
     // of left to random discovery. This is how we "definitely teach" the basics.
     {
-        const char* demos[] = {"demo_item.bin", "demo_stomp.bin"};   // mushroom + Goomba-stomp
+        // Skill-demo LIBRARY: seed replay from every demonstration we have. Legacy
+        // single files (demo_item/demo_stomp.bin) PLUS any *.bin dropped into the
+        // demos/ folder -- so new skills (jump a pit, clear a pipe, ...) are added
+        // just by placing a captured from-boot demo there, no recompile needed.
+        namespace fs = std::filesystem;
+        std::vector<std::string> demo_files;
+        for (const char* p : {"demo_item.bin", "demo_stomp.bin"})
+            if (fs::exists(p)) demo_files.push_back(p);
+        std::error_code ec;
+        if (fs::is_directory("demos", ec))
+            for (const auto& e : fs::directory_iterator("demos", ec))
+                if (e.path().extension() == ".bin") demo_files.push_back(e.path().string());
         const int reps = 15;
-        for (const char* dp : demos) {
+        for (const auto& dp : demo_files) {
             std::vector<uint8_t> imit;
             if (!load_actions(dp, imit) || imit.empty()) continue;
             for (int rep = 0; rep < reps; ++rep) {
@@ -600,7 +612,7 @@ int main(int argc, char** argv) {
                 }
             }
             std::printf("   imitation: seeded replay from %s (%d actions x%d reps)\n",
-                        dp, (int)imit.size(), reps);
+                        dp.c_str(), (int)imit.size(), reps);
             std::fflush(stdout);
         }
     }
