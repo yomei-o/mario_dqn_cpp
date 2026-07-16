@@ -191,52 +191,30 @@ float Env::step(int action, bool& done) {
     // cut the episode short when the agent is stuck against a pipe/pit.
     if (x > max_x_) { max_x_ = x; stall_ = 0; } else { ++stall_; }
 
-    // --- SCORE-FIRST reward shaping ------------------------------------------
-    // Old reward was dominated by rightward distance (~2000 over a level) so the
-    // agent ignored the ~70 pts of score and ran straight into enemies, getting
-    // stuck/killed. Now SCORE (stomps, coins, ? blocks) and POWER-UPS are the
-    // primary objective; progress is only a gentle nudge to keep exploring right
-    // and the stall/pit safeguard. Terminal events stay UNCLIPPED so the win
-    // bonus / death penalty come through in full.
-
-    // Gentle progress: keep drifting right, but no longer the main driver.
-    float dense = std::max(-15.f, std::min(15.f, 0.3f * dx - 0.1f));   // 0.3x weight (was 1.0)
+    // --- PROGRESS-FIRST reward (restored) + modest score --------------------
+    // Reverted from the score-first experiment. Down-weighting progress to 0.3x +
+    // a big 4x score term + a near-enemy "jump" bonus made the agent good at
+    // isolated segments but WORSE at a single from-start greedy run (greedy 2017
+    // -> ~300, dying at a fixed early spot) -- the coherent chained policy fell
+    // apart. This restores the exact progress-first reward the saved 2017 net was
+    // trained on, so warm-starting from it stays STABLE, plus a MODEST score term
+    // so coins/stomps still count without dominating. Curriculum then extends the
+    // stable from-start policy toward the flag. (Active item-seeking = later, phase
+    // ii, via item-aware observations -- not via reward that breaks chaining.)
+    float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));   // full-weight progress - time
     float r = dense;
 
-    // Score gain is the star. Decoded deltas are small ints (stomp +10, coin +20,
-    // ? block/points +N), so weight them up hard: a stomp/coin now clearly beats
-    // a few pixels of walking. Positive only (SMB score never drops); capped so a
-    // multi-event frame can't destabilize the TD target.
+    // Modest score gain (coins/stomps/? blocks): secondary to progress, small cap.
     int sc = score_val();
-    int dsc = std::max(0, sc - prev_score_);
-    r += std::min(80.f, 4.0f * dsc);            // stomp +10 -> +40, coin +20 -> +80(cap)
+    r += std::min(25.f, 1.0f * std::max(0, sc - prev_score_));
     prev_score_ = sc;
 
-    // Power-ups matter for survival AND score: big/fire Mario eats a hit instead
-    // of dying. Reward grabbing a mushroom/flower strongly; penalize losing power
-    // (a hit) but far less than a real death, so trading power for progress is OK.
+    // Power-ups: worth grabbing (a hit then costs power, not a life); losing power
+    // is penalized but far less than an actual death.
     int pw = power_state();
-    if (pw > prev_power_) r += 40.f;            // grabbed a mushroom / fire flower
-    else if (pw < prev_power_) r -= 15.f;       // got hit, dropped a power level
+    if (pw > prev_power_) r += 30.f;            // grabbed a mushroom / fire flower
+    else if (pw < prev_power_) r -= 12.f;       // got hit, dropped a power level
     prev_power_ = pw;
-
-    // Enemy-handling shaping (the user's hint: "get close, then JUMP"). Nudge the
-    // agent to be airborne when an enemy is within stomp range just ahead, so it
-    // learns to hop ONTO the enemy instead of walking into it. Kept small -- it
-    // only bootstraps the behavior; the real payoff is the score gain from the
-    // stomp above. Farming is bounded by the -0.1/step time cost and STALL_LIMIT.
-    if (float_state() == 0x01) {                // airborne (jumping/falling)
-        int py = player_y();
-        for (int i = 0; i < 5; ++i) {
-            if (RAM(0x000F + i) == 0) continue;             // slot inactive
-            int rel_x = enemy_level_x(i) - x;               // + = ahead of Mario
-            int rel_y = RAM(0x00CF + i) - py;               // + = below Mario
-            if (rel_x >= -8 && rel_x <= 56 && rel_y >= -8 && rel_y <= 40) {
-                r += 2.0f;                                  // poised to stomp a near enemy
-                break;
-            }
-        }
-    }
 
     done = false;
     if (is_dead()) { r = dense - 50.f; done = true; }           // pit/enemy death: clearly bad
