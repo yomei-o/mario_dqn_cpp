@@ -461,7 +461,7 @@ int main(int argc, char** argv) {
     // frontier) so the agent densely practices the still-unsolved final stretch
     // instead of replaying the easy start each time. Snapshots restore instantly.
     bool have_demo = env.load_demo("demo.bin");
-    if (have_demo) env.build_curriculum(16);
+    if (have_demo) env.build_curriculum(24);   // finer, whole-level coverage (was 16, back-half only)
     int n_ckpt = env.num_checkpoints();
     bool curriculum = n_ckpt > 0;
     // Anneal the curriculum: start balanced (learn the hard frontier) and shift

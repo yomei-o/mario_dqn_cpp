@@ -133,7 +133,13 @@ void Env::build_curriculum(int k_points) {
     ckpt_target_.clear();
     int L = (int)demo_.size();
     if (L < 40 || k_points < 1) return;
-    int lo = L / 2, hi = std::max(1, L - 8);   // back half, stopping short of the fatal tail
+    // Spread checkpoints across the WHOLE demo (not just the back half). When the
+    // demo only reached the frontier, back-half focus made sense; now the demo is
+    // a full-level clear, so covering early+mid+late gives the agent dense practice
+    // in EVERY region. That is what lets a from-start greedy run chain end-to-end:
+    // mid-level (where from-start episodes die before reaching, and old back-half
+    // checkpoints started after) was the un-practiced gap that broke chaining.
+    int lo = std::max(1, L / 12), hi = std::max(1, L - 8);   // ~8%..~99%: full level, short of the fatal tail
     // Target action counts (after how many demo actions to snapshot), ascending.
     std::vector<int> targets;
     for (int j = 0; j < k_points; ++j) {
