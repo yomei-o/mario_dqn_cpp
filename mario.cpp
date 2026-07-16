@@ -230,7 +230,13 @@ float Env::step(int action, bool& done) {
     // reward is IMMEDIATE (jump -> land -> score this step), so credit assignment is
     // easy, unlike the delayed multi-step mushroom/block payoff. So: strong progress
     // + an immediate stomp bonus, and NO item (mushroom/coin) reward at all.
-    float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));   // full-weight progress - time
+    // Progress reward, ANTI-RUSH (user's insight: the progress reward + time cost
+    // + discount lure the agent into sprinting headlong into hazards and dying).
+    // Reward forward progress only up to a WALKING pace (cap dx at 8): sprinting
+    // faster earns no extra, so there's no incentive to recklessly barrel forward.
+    // Time penalty softened (0.1 -> 0.04) so it isn't rushed. Death (-50) still
+    // makes caution pay.
+    float dense = std::max(-12.f, std::min(12.f, std::min(dx, 8.f) - 0.04f));
     float r = dense;
     if (stomped_) r += 12.f;                    // defeated an enemy -> clears the path (risky for small Mario)
     else {
