@@ -504,14 +504,29 @@ int main(int argc, char** argv) {
     const std::string win_path = "demo_win_" + std::to_string(seed_val) + ".bin";
     int best_win_prefix = 1 << 30;
 
+    // Restrict curriculum starts to EARLY checkpoints (env MARIO_CKPT_XMAX). Phase
+    // ii forces dense practice at the early ? -block / mushroom cluster (x~700) so
+    // the agent actually attempts block-hits (a rare precise maneuver it otherwise
+    // never discovers) -- the reward for a coin/mushroom can only be learned once
+    // it's been hit. Unset = all checkpoints (phase-i whole-level behavior).
+    int ckpt_xmax = -1;
+    if (const char* e = std::getenv("MARIO_CKPT_XMAX")) ckpt_xmax = std::atoi(e);
+    std::vector<int> eligible_ckpts;
+    for (int k = 0; k < n_ckpt; ++k)
+        if (ckpt_xmax < 0 || env.checkpoint_x(k) <= ckpt_xmax) eligible_ckpts.push_back(k);
+    if (curriculum)
+        std::printf("   curriculum starts: %d/%d checkpoints eligible (MARIO_CKPT_XMAX=%d)\n",
+                    (int)eligible_ckpts.size(), n_ckpt, ckpt_xmax);
+    std::fflush(stdout);
+
     for (int ep = 1; ep <= episodes; ++ep) {
         // Curriculum: a decreasing fraction of episodes start at a checkpoint near
         // the frontier; the rest start from x=0 so the full policy stays practiced.
         float curriculum_prob = cp_start - (cp_start - cp_end) * std::min(1.f, total_steps / cp_anneal);
         std::vector<float> s;
         int ep_ckpt = -1;                 // checkpoint this episode started from (-1 = level start)
-        if (curriculum && ag::randf() < curriculum_prob) {
-            ep_ckpt = (int)(ag::randf() * n_ckpt) % n_ckpt;
+        if (curriculum && !eligible_ckpts.empty() && ag::randf() < curriculum_prob) {
+            ep_ckpt = eligible_ckpts[(int)(ag::randf() * eligible_ckpts.size()) % (int)eligible_ckpts.size()];
             s = env.reset_to_checkpoint(ep_ckpt);
         } else {
             s = env.reset();
