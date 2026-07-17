@@ -4,6 +4,37 @@
 読めば続きを進められるようにしてある。シリーズ全体は各リポジトリのREADME参照。
 
 ---
+## 🟢 現在地（2026-07-17）: Phase 4 WASM 完了 → Phase 5 World 1-2 に着手
+
+### Phase 4 = 完了・公開済み（コミット済み）
+- **NES+DQNを丸ごとWASM化**（`wasm.cpp` / `build_wasm.sh` / `web/wasm_index.html`、`Env::init_bytes`）。
+  ブラウザで「クリア走行の再生」＋「学習ネットのライブ推論」。ROMはJSからファイル選択で渡す（非同梱）。
+- **ライブデモ**: https://yomei-o.github.io/mario-dqn/ （別リポ `yomei-o.github.io` の `mario-dqn/`）。
+  ソースは `mario_dqn_cpp` にコミット済み。ビルド物のコピーも `mario_dqn_cpp/mario-dqn/` に同梱。
+- node検証: クリア走行→WON x=3161 / ライブ推論→x=2370。
+
+### Phase 5 = World 1-2（地下）。**1-1と分離しつつ共通コアを共有**する設計に着手
+**probeで判明した1-2の実態**（`nes::save_state`で1-2開始を保存しランダム探索）:
+- **1-1クリアデモ(`warmstarts/demo_clear_1-1.bin`)を再生→自動遷移で1-2(地下=area_type 2, area_index 2)がロード**。これが「1-2から開始」の唯一の決定的手段。
+- 右+ジャンプ(DOWN無し)だけで **x≈1202** まで到達可。出口はさらに先。**出口=横土管**で、右バイアス行動集合では
+  「入れる横土管＝出口」だけがエリア遷移対象 → **DOWN不要**、「エリア変化＝出口土管に入った」が綺麗な報酬シグナル。
+- 途中まで動画: **`docs/mario_1-2_partway.gif`**（探索方策 x≈1202、`tools/make_gif.sh`でGIF化）。
+
+**1-2用に追加したソース（★まだ未コミット＝ローカルWIP。1-2で十分な進捗/クリアが出たらコミット予定）**:
+- `mario_shared.h` — **共通コア**（namespace `smb`）: RAMアクセス・`build_obs`・行動→ボタン・`boot`・tile。obs=STATE_DIM 160で1-1と完全一致。
+- `mario12.h` / `mario12.cpp` — **1-2 env**（namespace `mario12`）: `reset`(1-1クリア→遷移→1-2開始を`save_state`でキャッシュし以後は即`load_state`)、`is_win`(旗=`float_state==3`)、
+  **報酬=進行 + 土管進入ボーナス`PIPE_BONUS=+100`(進行とは別立て) + 踏み/避け**。`MAX_STEPS=1500`,`STALL_LIMIT=120`。
+- `train12.cpp` — **1-2トレーナー**（`mario_dqn.cpp`とは別ファイル、DQNコアは再利用）。obs同一なので**1-1 BCネット(`bc_clear_x2370_hid512.bin`)からwarm-start**（右走行+ジャンプを転移）。旗到達で`demo_clear_1-2_<seed>.bin`を保存。
+  引数: `mario12_dqn [ROM] [seed] [out.bin] [warm.bin] [eps] [lr]`。
+- `record12.cpp` — 学習ネットの1-2 greedy走行を録画（別exe。学習中でも動く）。`mario12_rec [ROM] [net.bin] [out.bin]`→MRUN→`make_gif.sh`。
+- `train12_parallel.sh` — 6ワーカー並列（eps 0.20〜0.70の探索スペクトル）。CMakeに `mario12_dqn` / `mario12_rec` ターゲット追加。
+- `mario.h`/`mario.cpp`(1-1)は**無改変**（デプロイ済み1-1/WASMを壊さない）。
+
+**状態(2026-07-17時点)**: 6ワーカー学習中。warm時点の1-2 greedyは x=182（1-1ネットは1-2序盤で詰まる）。
+探索は x≈900+ に到達。**次**: greedyが naive(1202)超え/出口土管到達/旗到達したら `mario12_rec` で録画→GIF。
+うまくいったら 1-2ソース一式＋クリアネットをコミット、WASMデモにも1-2を追加。
+
+---
 ## 🔴 引き継ぎメモ（2026-07-16, 別マシン/別Claudeへ）
 
 **目標: 1-1を先頭から通しでgreedyクリア（フラッグポール x≈3160）＋道中で高得点・キノコ取得。**
