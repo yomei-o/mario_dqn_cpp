@@ -1,4 +1,4 @@
-# Warm-start checkpoints & demos (1-1)
+# Warm-start checkpoints & demos (1-1 & 1-2)
 
 Reusable nets/demos captured across experiments. Observation is `STATE_DIM=160`
 (mario.h). Load a net into a `QNet(S, A, HID)` — **HID must match the file** (see
@@ -18,6 +18,7 @@ build/Release/mario_dqn.exe record "ROM.nes" warmstarts/<file> web/run.bin
 | `bc_clear_x2370_hid512.bin`        | **512** | **2370** | Behavior-cloning net (imitates clear demos). **Only net to pass the x≈2226 step.** Needs HID=512. |
 | `score_mushroom_x434_hid256.bin`   | 256 | 434 | Score-reward net trained from scratch. **Grabs the mushroom (power=1, score 120)** — big Mario. Short reach. |
 | `warmprog_small_x1525_hid256.bin`  | 256 | 1525 | Warm(mushroom)→progress run. Dropped the mushroom, rushed (small Mario). Stops ~x1513 nav spot. |
+| `dqn12_1-2_x978_hid512.bin`        | **512** | **978** (in 1-2) | **World 1-2** net (`mario12`, 6 actions incl. NOOP). Warm-started from `bc_clear_x2370` then DQN in 1-2 with ratchet reward + wait-friendly stall. Reaches x≈978 (past the "pit + Buzzy Beetle" timing spot, using NOOP to wait). Load with the **6-action** `mario12` env, not the 5-action 1-1 env. |
 
 ## Demos (action sequences; for curriculum & behavior cloning)
 

@@ -46,6 +46,30 @@ if (WIN32)
     target_link_libraries(mario_dqn PRIVATE winmm)
 endif()
 
+# Phase 4: DQN x Super Mario 1-2 (underground). Separate trainer/env from 1-1,
+# sharing the level-agnostic core (mario_shared.h). Warm-starts from a 1-1 net.
+add_executable(mario12_dqn train12.cpp mario12.cpp nes.cpp autograd.cpp ${LAINES_SRC})
+target_include_directories(mario12_dqn PRIVATE . third_party/laines/include)
+if (MSVC)
+    target_compile_options(mario12_dqn PRIVATE /O2 /permissive-)
+else()
+    target_compile_options(mario12_dqn PRIVATE -O2)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mario12_dqn PRIVATE Threads::Threads)
+endif()
+if (WIN32)
+    target_link_libraries(mario12_dqn PRIVATE winmm)
+endif()
+
+# 1-2 agent video recorder (separate exe so it runs while workers train).
+add_executable(mario12_rec record12.cpp mario12.cpp nes.cpp autograd.cpp ${LAINES_SRC})
+target_include_directories(mario12_rec PRIVATE . third_party/laines/include)
+if (MSVC)
+    target_compile_options(mario12_rec PRIVATE /O2 /permissive-)
+else()
+    target_compile_options(mario12_rec PRIVATE -O2)
+endif()
+
 # Static file server for the results viewer (cpp-httplib, single-header MIT).
 add_executable(server server.cpp)
 target_include_directories(server PRIVATE third_party)
