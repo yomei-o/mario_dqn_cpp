@@ -9,6 +9,8 @@ build/
 # trained weights / checkpoints (keep the released Mario checkpoint)
 *.bin
 !mario_best.bin
+# reusable warm-start library (curated nets + demos)
+!warmstarts/*.bin
 
 # NES ROMs are copyrighted -- keep them out of code commits (supply your own)
 *.nes
