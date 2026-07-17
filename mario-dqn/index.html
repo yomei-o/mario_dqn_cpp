@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DQN × Super Mario Bros 1-1 — WASM demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; line-height: 1.6; }
+  h1 { font-size: 1.4rem; margin-bottom: .2em; }
+  .sub { color: #888; margin-top: 0; }
+  #screen { image-rendering: pixelated; width: 512px; height: 480px; background: #000;
+            border-radius: 6px; display: block; max-width: 100%; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+  button { font-size: 1rem; padding: 8px 14px; border-radius: 6px; border: 1px solid #888;
+           background: #f3f3f3; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  @media (prefers-color-scheme: dark){ button{ background:#2a2a2a; color:#eee; } }
+  #status { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .goal { color: #1a9c3a; }
+  code { background: rgba(128,128,128,.18); padding: 1px 5px; border-radius: 4px; }
+  .note { color:#888; font-size:.9rem; }
+</style>
+</head>
+<body>
+  <h1>🍄 DQN × Super Mario Bros 1-1 — WebAssembly demo</h1>
+  <p class="sub">自作の依存最小C++ DQN＋本物のNESエミュ(LaiNES)を丸ごとWASM化。探索で捕獲したクリア走行はポールに到達します。</p>
+
+  <canvas id="screen" width="256" height="240"></canvas>
+
+  <div class="row">
+    <label>ROM: <input type="file" id="rom" accept=".nes"></label>
+  </div>
+  <div class="row">
+    <button id="clear" disabled>🏁 クリア走行を見る</button>
+    <button id="agent" disabled>🤖 エージェントを走らせる</button>
+    <button id="reset" disabled>⟲ リセット</button>
+  </div>
+  <p id="status">ROM (Super Mario Bros) を選んでください。</p>
+
+  <p class="note">
+    著作権上ROMは同梱していません。手元の <code>.nes</code> を読み込んでください（ブラウザ内で完結、送信しません）。<br>
+    「クリア走行」＝エージェントが探索中に捕獲した先頭からの完全クリア行動列の再生（ポール到達）。<br>
+    「エージェント」＝学習したQネットを毎フレーム推論（greedy）。段差(x≈2226)を越えて x≈2370 まで進んで止まります。<br>
+    ソース: <a href="https://github.com/yomei-o/mario_dqn_cpp">github.com/yomei-o/mario_dqn_cpp</a>
+  </p>
+
+<script src="mario.js"></script>
+<script>
+(function(){
+  const cv = document.getElementById('screen');
+  const ctx = cv.getContext('2d');
+  const status = document.getElementById('status');
+  const btnClear = document.getElementById('clear');
+  const btnAgent = document.getElementById('agent');
+  const btnReset = document.getElementById('reset');
+  const romInput = document.getElementById('rom');
+
+  let M = null, api = {}, W = 256, H = 240, img = null;
+  let romLoaded = false, mode = null, raf = 0;
+
+  createMario().then(mod => {
+    M = mod;
+    api.load  = M.cwrap('wasm_load_rom', 'number', ['number','number']);
+    api.reset = M.cwrap('wasm_reset', null, []);
+    api.stepA = M.cwrap('wasm_step_agent', 'number', []);
+    api.stepD = M.cwrap('wasm_step_demo', 'number', []);
+    api.fb    = M.cwrap('wasm_framebuffer', 'number', []);
+    api.x     = M.cwrap('wasm_mario_x', 'number', []);
+    W = M.cwrap('wasm_width','number',[])();
+    H = M.cwrap('wasm_height','number',[])();
+    cv.width = W; cv.height = H; img = ctx.createImageData(W, H);
+    status.textContent = 'WASM 読込完了。ROM を選んでください。';
+  });
+
+  romInput.addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file || !M) return;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const ptr = M._malloc(buf.length);
+    M.HEAPU8.set(buf, ptr);
+    const ok = api.load(ptr, buf.length);
+    M._free(ptr);
+    if (!ok) { status.textContent = 'ROM の読み込みに失敗しました。'; return; }
+    romLoaded = true;
+    btnClear.disabled = btnAgent.disabled = btnReset.disabled = false;
+    draw();
+    status.textContent = 'ROM 読込完了。モードを選んでください。';
+  });
+
+  function draw(){
+    const p = api.fb();
+    img.data.set(M.HEAPU8.subarray(p, p + W*H*4));
+    ctx.putImageData(img, 0, 0);
+  }
+
+  function stop(){ if (raf) cancelAnimationFrame(raf); raf = 0; }
+
+  function run(which){
+    stop(); mode = which; api.reset();
+    const label = which === 'demo' ? 'クリア走行' : 'エージェント';
+    const loop = () => {
+      const r = (which === 'demo') ? api.stepD() : api.stepA();
+      draw();
+      const x = api.x();
+      if (r === 1) { status.innerHTML = `<span class="goal">🏁 ${label}: ゴール到達！ (x=${x})</span>`; stop(); return; }
+      if (r === 2) { status.textContent = `${label}: 終了 (x=${x})`; stop(); return; }
+      status.textContent = `${label} 実行中… x=${x}`;
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+  }
+
+  btnClear.addEventListener('click', () => run('demo'));
+  btnAgent.addEventListener('click', () => run('agent'));
+  btnReset.addEventListener('click', () => { stop(); api.reset(); draw(); status.textContent = 'リセットしました。'; });
+})();
+</script>
+</body>
+</html>
