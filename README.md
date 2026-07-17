@@ -24,7 +24,8 @@ NES(LaiNES)＋DQN推論を**丸ごとWebAssembly化**。ブラウザ上で「ク
 
 - **[▶ 1-1 デモ: yomei-o.github.io/mario-dqn](https://yomei-o.github.io/mario-dqn/)** — スタート→ポール到達の通しクリア＋ライブ推論。
 - **[▶ 1-2 デモ: yomei-o.github.io/mario-dqn-1-2](https://yomei-o.github.io/mario-dqn-1-2/)** — 1-1クリア→1-2遷移後、学習エージェント（NOOP=待つ行動つき）が中盤の「穴＋カメ」を待って突破（x≈978、ゴールは学習途上）。
-- **[▶ 1-3 デモ](https://yomei-o.github.io/mario-dqn-1-3/)** ・ **[▶ 1-4 デモ](https://yomei-o.github.io/mario-dqn-1-4/)** — **RAMレベルワープ**で直接開始（1-2クリア不要）。学習中のため暫定ネット、進んだら同URLで差し替え。
+- **[▶ 1-3 デモ](https://yomei-o.github.io/mario-dqn-1-3/)** — **RAMレベルワープ**で直接開始（1-2クリア不要）。学習エージェントが空中プラットフォーム地帯 x≈627 まで。
+- **[▶ 1-4 デモ](https://yomei-o.github.io/mario-dqn-1-4/)** — 城面（斧クリア）にワープ開始。学習中のため暫定ネット、進んだら同URLで差し替え。
 
 ## 🚇 World 1-2 に挑戦中（Phase 5）
 
