@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DQN × Super Mario Bros 1-2 — WASM demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; line-height: 1.6; }
+  h1 { font-size: 1.4rem; margin-bottom: .2em; }
+  .sub { color: #888; margin-top: 0; }
+  #screen { image-rendering: pixelated; width: 512px; height: 480px; background: #000;
+            border-radius: 6px; display: block; max-width: 100%; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+  button { font-size: 1rem; padding: 8px 14px; border-radius: 6px; border: 1px solid #888;
+           background: #f3f3f3; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  @media (prefers-color-scheme: dark){ button{ background:#2a2a2a; color:#eee; } }
+  #status { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .goal { color: #1a9c3a; }
+  code { background: rgba(128,128,128,.18); padding: 1px 5px; border-radius: 4px; }
+  .note { color:#888; font-size:.9rem; }
+</style>
+</head>
+<body>
+  <h1>🚇 DQN × Super Mario Bros 1-2 — WebAssembly demo</h1>
+  <p class="sub">地下面 1-2。1-1をクリアして遷移した先からエージェントがプレイ。<b>「穴＋歩くカメ」の難所を“待って”越える</b>挙動を獲得（ゴールは未到達＝学習途上）。</p>
+
+  <canvas id="screen" width="256" height="240"></canvas>
+
+  <div class="row">
+    <label>ROM: <input type="file" id="rom" accept=".nes"></label>
+  </div>
+  <div class="row">
+    <button id="agent" disabled>🤖 エージェントを走らせる</button>
+    <button id="reset" disabled>⟲ リセット</button>
+  </div>
+  <p id="status">ROM (Super Mario Bros) を選んでください。</p>
+
+  <p class="note">
+    著作権上ROMは同梱していません。手元の <code>.nes</code> を読み込んでください（ブラウザ内で完結、送信しません）。<br>
+    ROM読込時、<b>1-1をクリアして1-2へ遷移する処理を内部で実行</b>するため、最初の準備に数秒かかります（以降のリセットは即時）。<br>
+    「エージェント」＝1-2用に学習したQネット（**待つ NOOP 行動つき・6行動**）を毎フレーム推論。<br>
+    x≈978（中盤の「穴＋Buzzy Beetle」を待って突破）まで進んで止まります。出口土管/旗の到達は今後の課題。<br>
+    ソース: <a href="https://github.com/yomei-o/mario_dqn_cpp">github.com/yomei-o/mario_dqn_cpp</a>
+     ｜ <a href="../mario-dqn/">1-1 のデモ</a>
+  </p>
+
+<script src="mario12.js"></script>
+<script>
+(function(){
+  const cv = document.getElementById('screen');
+  const ctx = cv.getContext('2d');
+  const status = document.getElementById('status');
+  const btnAgent = document.getElementById('agent');
+  const btnReset = document.getElementById('reset');
+  const romInput = document.getElementById('rom');
+
+  let M = null, api = {}, W = 256, H = 240, img = null;
+  let romLoaded = false, raf = 0;
+
+  createMario12().then(mod => {
+    M = mod;
+    api.load  = M.cwrap('wasm_load_rom', 'number', ['number','number']);
+    api.reset = M.cwrap('wasm_reset', null, []);
+    api.stepA = M.cwrap('wasm_step_agent', 'number', []);
+    api.fb    = M.cwrap('wasm_framebuffer', 'number', []);
+    api.x     = M.cwrap('wasm_mario_x', 'number', []);
+    W = M.cwrap('wasm_width','number',[])();
+    H = M.cwrap('wasm_height','number',[])();
+    cv.width = W; cv.height = H; img = ctx.createImageData(W, H);
+    status.textContent = 'WASM 読込完了。ROM を選んでください。';
+  });
+
+  romInput.addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file || !M) return;
+    status.textContent = '1-1クリア→1-2遷移を準備中… (数秒)';
+    // let the status paint before the (synchronous) load blocks the thread
+    await new Promise(r => setTimeout(r, 30));
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const ptr = M._malloc(buf.length);
+    M.HEAPU8.set(buf, ptr);
+    const ok = api.load(ptr, buf.length);
+    M._free(ptr);
+    if (!ok) { status.textContent = 'ROM の読み込みに失敗しました。'; return; }
+    romLoaded = true;
+    btnAgent.disabled = btnReset.disabled = false;
+    draw();
+    status.textContent = '準備完了（1-2スタート）。「エージェントを走らせる」を押してください。';
+  });
+
+  function draw(){
+    const p = api.fb();
+    img.data.set(M.HEAPU8.subarray(p, p + W*H*4));
+    ctx.putImageData(img, 0, 0);
+  }
+  function stop(){ if (raf) cancelAnimationFrame(raf); raf = 0; }
+
+  function run(){
+    stop(); api.reset();
+    const loop = () => {
+      const r = api.stepA();
+      draw();
+      const x = api.x();
+      if (r === 1) { status.innerHTML = `<span class="goal">🏁 ゴール到達！ (x=${x})</span>`; stop(); return; }
+      if (r === 2) { status.textContent = `エージェント: 終了 (x=${x})`; stop(); return; }
+      status.textContent = `エージェント実行中… x=${x}`;
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+  }
+
+  btnAgent.addEventListener('click', run);
+  btnReset.addEventListener('click', () => { stop(); api.reset(); draw(); status.textContent = 'リセットしました。'; });
+})();
+</script>
+</body>
+</html>
