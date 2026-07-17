@@ -148,7 +148,11 @@ CPUのみ（この環境ではGPU不可：M2 Mac→UTM→Windows、CUDA/Metal使
     - **並列学習(best-of-N)**: エミュがグローバル・シングルトンなので1プロセス=1コア。`mario_dqn [ROM] [seed] [out.bin]`
       で別seed/別出力のワーカーを複数プロセス起動→`train_parallel.sh`が全コア活用しbest-of-N選抜（`eval`で採点）。
       （さらに効率化する場合は「チャンピオン共有の集団学習」を追加可能=未実装）
-- **Phase 4 ⬜ WASM化してブラウザ表示** — 未着手（設計は下記）。
+- **Phase 4 ✅ WASM化してブラウザ表示** — `wasm.cpp`(EMSCRIPTEN_KEEPALIVE)＋`build_wasm.sh`(emcc)で
+  NES(LaiNES)＋QNet推論を丸ごとWASM化。`web/wasm_index.html`＝canvasデモ（ROMはJSからバイト渡し＝非同梱）。
+  2モード: **クリア走行の再生（demo_clear_1-1.bin, ポール到達=won）** と **ライブgreedy推論（net=BC 2370, x~2370）**。
+  node で検証済み（demo→WON/x=3161, agent→x=2370）。デプロイ: **https://yomei-o.github.io/mario-dqn/** 。
+  net/demoはWASMに`--embed-file`で埋め込み（`warmstarts/`のbc_clear_x2370_hid512.bin & demo_clear_1-1.bin）。
 
 ## ビルド & 実行（MSVC / Visual Studio）
 

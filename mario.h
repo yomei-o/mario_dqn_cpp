@@ -36,7 +36,8 @@ public:
     static constexpr int STALL_LIMIT = 90;   // end episode after this many stalled steps
                                              // (roomy enough to attempt a pipe jump)
 
-    bool init(const char* rom_path);         // read ROM bytes once
+    bool init(const char* rom_path);         // read ROM bytes once (native)
+    bool init_bytes(const uint8_t* data, int n);  // ROM from memory (WASM/JS)
     const std::vector<float>& reset();        // reboot + start 1-1; returns obs
     // Curriculum: reboot, replay the loaded demonstration's first `start_idx`
     // actions to fast-forward to a checkpoint, then begin the episode there.

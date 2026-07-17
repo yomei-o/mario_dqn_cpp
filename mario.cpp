@@ -63,6 +63,13 @@ bool Env::init(const char* rom_path) {
     return true;
 }
 
+bool Env::init_bytes(const uint8_t* data, int n) {
+    if (!data || n <= 0) return false;
+    rom_.assign(data, data + n);
+    obs_.assign(STATE_DIM, 0.f);
+    return true;
+}
+
 bool Env::is_dead() const {
     int st = player_state();
     return st == 0x06 || st == 0x0B || vert_page() > 1 || lives() < start_lives_;
