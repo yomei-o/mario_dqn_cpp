@@ -20,6 +20,7 @@ build/Release/mario_dqn.exe record "ROM.nes" warmstarts/<file> web/run.bin
 | `warmprog_small_x1525_hid256.bin`  | 256 | 1525 | Warm(mushroom)→progress run. Dropped the mushroom, rushed (small Mario). Stops ~x1513 nav spot. |
 | `dqn12_1-2_x978_hid512.bin`        | **512** | **978** (in 1-2) | **World 1-2** net (`mario12`, 6 actions incl. NOOP). Warm-started from `bc_clear_x2370` then DQN in 1-2 with ratchet reward + wait-friendly stall. Reaches x≈978 (past the "pit + Buzzy Beetle" timing spot, using NOOP to wait). Load with the **6-action** `mario12` env, not the 5-action 1-1 env. |
 | `dqn13_1-3_x627_hid512.bin`        | **512** | **627** (in 1-3) | **World 1-3** net (`mario13`, 6 actions). Warp-started (RAM level-warp), warm-started from the 1-2 net, DQN ~30 min. Reaches x≈627 into the athletic platform section. 6-action `mario13` env. |
+| `dqn14_1-4_x302_hid512.bin`        | **512** | **302** (in 1-4) | **World 1-4** net (`mario14`, 6 actions). Warp-started, warm from the 1-2 net. Reaches x≈302 (early castle / first lava gap). A baseline for the 1-4 template -- not tuned far (the goal here was the per-level framework, not a full clear). 6-action `mario14` env. |
 
 ## Demos (action sequences; for curriculum & behavior cloning)
 

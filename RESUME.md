@@ -55,7 +55,10 @@ WASMデモへの1-2追加は、クリアが出てから。
 - **`train_common.hpp`**（`template<class Env> train_level`）＝DQN学習ループを共通化。薄い `train13.cpp`/`train14.cpp`。
   warm-start順: 自分のckpt(6行動) → **1-2ネット(6行動,`dqn12_1-2_x978`)** → 1-1 BC(5→6吸収)。`train_lv_parallel.sh`。
 - CMake: `mario13_dqn`/`mario14_dqn`。スモーク: 1-3 warm greedy x=283 / 1-4 x=231（ともにワープ開始OK）。
-- **状態**: 2026-07-18 コミット。**1-3から探索開始**（並列ワーカー稼働）。1-4は環境のみ用意（後で）。
+- **状態**: 2026-07-18 完了。1-3 ≈30分DQN → **greedy x≈627**（`warmstarts/dqn13_1-3_x627_hid512.bin`、動画 `docs/mario_1-3_agent_best.gif`、WASM差替え済み）。
+  1-4 も同枠で **greedy x≈302**（`warmstarts/dqn14_1-4_x302_hid512.bin`、`docs/mario_1-4_agent_best.gif`、WASM差替え済み。序盤の溶岩隙間止まり）。
+  **本シリーズ(1-2〜1-4)の主目的は“面ごとの再利用テンプレ”の整備**（env/報酬/ワープ開始/学習/WASMの枠組み）。完全クリアは伸びしろとして開放。
+  録画は汎用 `record_common.hpp`＋`mario1X_rec`。WASM差替え=`NET=warmstarts/<net> bash build_wasm1X.sh`→ github.io 同URL再デプロイ。
 
 ---
 ## 🔴 引き継ぎメモ（2026-07-16, 別マシン/別Claudeへ）
