@@ -23,7 +23,8 @@ bool loaded();
 void set_buttons(int player, uint8_t bits);  // player 0/1, OR of Button flags
 void step_frame();                            // advance exactly one video frame
 const uint32_t* pixels();                     // WIDTH*HEIGHT, LaiNES 0xXXRRGGBB
-uint8_t ram(uint16_t addr);                   // CPU RAM $0000-$07FF
+uint8_t ram(uint16_t addr);                   // read CPU RAM $0000-$07FF
+void ram_write(uint16_t addr, uint8_t v);     // write CPU RAM (e.g. SMB level-warp poke)
 
 // Fast in-memory save/restore of the full emulator state (CPU + PPU; mapper0 is
 // immutable, APU is sound-only). Deterministic at frame boundaries: restoring a

@@ -10,6 +10,7 @@ wasmtest/
 
 # trained weights / checkpoints (keep the released Mario checkpoint)
 *.bin
+*.latest_*
 !mario_best.bin
 # reusable warm-start library (curated nets + demos)
 !warmstarts/*.bin

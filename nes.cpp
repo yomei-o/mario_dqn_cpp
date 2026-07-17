@@ -37,6 +37,7 @@ void set_buttons(int player, uint8_t bits) { g_buttons[player & 1] = bits; }
 void step_frame() { CPU::run_frame(); }
 const uint32_t* pixels() { return g_framebuffer; }
 uint8_t ram(uint16_t addr) { return CPU::ram[addr & 0x7FF]; }
+void ram_write(uint16_t addr, uint8_t v) { CPU::ram[addr & 0x7FF] = v; }
 
 void save_state(std::vector<uint8_t>& buf) {
     buf.clear();

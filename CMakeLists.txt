@@ -61,6 +61,23 @@ if (WIN32)
     target_link_libraries(mario12_dqn PRIVATE winmm)
 endif()
 
+# World 1-3 / 1-4 trainers (warp-started; share the generic templated trainer).
+add_executable(mario13_dqn train13.cpp mario13.cpp nes.cpp autograd.cpp ${LAINES_SRC})
+add_executable(mario14_dqn train14.cpp mario14.cpp nes.cpp autograd.cpp ${LAINES_SRC})
+foreach(t mario13_dqn mario14_dqn)
+    target_include_directories(${t} PRIVATE . third_party/laines/include)
+    if (MSVC)
+        target_compile_options(${t} PRIVATE /O2 /permissive-)
+    else()
+        target_compile_options(${t} PRIVATE -O2)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${t} PRIVATE Threads::Threads)
+    endif()
+    if (WIN32)
+        target_link_libraries(${t} PRIVATE winmm)
+    endif()
+endforeach()
+
 # 1-2 agent video recorder (separate exe so it runs while workers train).
 add_executable(mario12_rec record12.cpp mario12.cpp nes.cpp autograd.cpp ${LAINES_SRC})
 target_include_directories(mario12_rec PRIVATE . third_party/laines/include)
