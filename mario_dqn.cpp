@@ -79,10 +79,8 @@ struct CpuThrottle {
 // Hidden width of the Q-net MLP. Bumped 256 -> 512 for more capacity to hold the
 // whole-level run AND item/stomp skills at once; the 256-hidden mario_best.bin is
 // carried in function-preserving via QNet::load_widen (net2wider).
-static const int HID = 256;       // back to the 2017 net's native width for a clean, exact
-                                  // warm-start (load_expand) + full training to EXTEND reach
-                                  // toward the 1-1 flag (no items -> no fine-tune instability).
-static const int OLD_HID = 256;   // width of the frozen 2017 base inside a widened net (unused at HID=256)
+static const int HID = 512;       // match the BC net (bc_clear_x2370_hid512) we warm-start from
+static const int OLD_HID = 512;   // (freeze-base path unused at HID==OLD_HID)
 
 // Freeze the 2017 base: zero the gradients of every weight that defines the old
 // policy's computation path, so ONLY the net2wider-added units train. Kept fixed:
@@ -134,6 +132,19 @@ static void clip_grads(std::vector<Tensor>& ps, float max_norm) {
     if (norm > max_norm) { float s = max_norm / (norm + 1e-6f); for (auto& p : ps) for (float& g : p.grad()) g *= s; }
 }
 
+// EMA / Polyak weight averaging: ema <- decay*ema + (1-decay)*online, per weight.
+// The online net oscillates as Q updates flip argmaxes over the long trajectory
+// (the "retention" problem); the EMA net averages that out, giving a much more
+// stable greedy policy. We EVALUATE and SAVE the EMA net, but keep ACTING with
+// online (fresh exploration). Standard SWA/mean-teacher trick.
+static void ema_update(QNet& ema, QNet& online, float decay) {
+    auto pe = ema.params(), po = online.params();
+    for (size_t i = 0; i < pe.size(); ++i) {
+        auto& e = pe[i].data(); auto& o = po[i].data();
+        for (size_t j = 0; j < e.size(); ++j) e[j] = decay * e[j] + (1.f - decay) * o[j];
+    }
+}
+
 // Action-sequence file I/O (u32 count + count action bytes). Shared by the demo
 // tooling and the win-capture path.
 static bool save_actions(const std::string& path, const std::vector<uint8_t>& acts) {
@@ -154,6 +165,167 @@ static bool load_actions(const std::string& path, std::vector<uint8_t>& acts) {
     size_t got = n ? std::fread(acts.data(), 1, n, f) : 0;
     std::fclose(f);
     return got == n;
+}
+
+// Behavior Cloning: instead of fixing the unstable Q-function, directly learn a
+// POLICY that imitates the from-start CLEAR demos. Build a (state,action) dataset
+// by replaying every clear demo through the env, then supervised-train the net's
+// outputs as action logits with cross-entropy. greedy = argmax logits = the
+// imitated clear -- the greedy policy is optimized DIRECTLY (no TD, no forgetting).
+// Eval greedy from start each epoch; save best to mario_bc.bin.
+static int bc_train(const char* rom) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+
+    std::vector<std::vector<float>> X;   // states
+    std::vector<int> Y;                  // demonstrated actions
+    auto add_demo = [&](const std::string& path) {
+        std::vector<uint8_t> acts;
+        if (!load_actions(path, acts) || acts.empty()) return;
+        std::vector<float> s = env.reset();
+        bool d = false; size_t n0 = X.size();
+        for (size_t t = 0; t < acts.size() && !d; ++t) {
+            X.push_back(s); Y.push_back((int)acts[t]);
+            env.step(acts[t], d);
+            s = env.observation();
+        }
+        std::printf("  + %-24s %5zu pairs (reached x=%d won=%d)\n",
+                    path.c_str(), X.size() - n0, env.mario_x(), (int)env.won());
+    };
+    add_demo("demo.bin");
+    for (int i = 0; i < 8; ++i) add_demo("demo_win_" + std::to_string(i) + ".bin");
+    add_demo("demo_clear_fromstart.bin");
+    int N = (int)X.size();
+    if (N == 0) { std::printf("no clear demos found for BC\n"); return 1; }
+    std::printf("BC dataset: %d (state,action) pairs | state_dim=%d hidden=%d\n", N, S, HID);
+    std::fflush(stdout);
+
+    QNet net(S, A, HID);                  // outputs treated as action logits
+    Adam opt(net.params(), 1e-3f);
+    auto params = net.params();
+    const int epochs = 600, mb = 64;
+    int best_x = 0;
+    std::vector<int> idx(N);
+    for (int i = 0; i < N; ++i) idx[i] = i;
+    for (int ep = 1; ep <= epochs; ++ep) {
+        for (int i = N - 1; i > 0; --i) { int j = (int)(ag::randf() * (i + 1)); std::swap(idx[i], idx[j]); }
+        double ep_loss = 0; int nb = 0;
+        for (int b0 = 0; b0 + mb <= N; b0 += mb) {
+            auto xs = Tensor::zeros({mb, S}, false);
+            std::vector<float> oh(mb * A, 0.f);
+            for (int b = 0; b < mb; ++b) {
+                int e = idx[b0 + b];
+                for (int k = 0; k < S; ++k) xs.data()[b * S + k] = X[e][k];
+                oh[b * A + Y[e]] = 1.f;
+            }
+            auto logits = net.forward(xs);
+            auto lsm = log_softmax_rows(logits);
+            auto loss = mul_scalar(sum(mul(lsm, Tensor::from(oh, {mb, A}, false))), -1.0f / mb);
+            opt.zero_grad(); loss.backward(); clip_grads(params, 10.f); opt.step();
+            ep_loss += loss.data()[0]; ++nb;
+        }
+        int px = greedy_episode(net, env);
+        bool won = env.won();
+        if (px > best_x) { best_x = px; net.save("mario_bc.bin"); }
+        if (ep % 5 == 0 || won)
+            std::printf("epoch %3d  loss %.4f  greedy_x %4d %s  best %d\n",
+                        ep, ep_loss / std::max(1, nb), px, won ? "<<< WON" : "", best_x);
+        std::fflush(stdout);
+        if (won) { net.save("mario_bc.bin");
+            std::printf("*** BC greedy CLEARED 1-1 (x=%d, epoch %d) -> mario_bc.bin ***\n", px, ep);
+            break; }
+    }
+    std::printf("BC done. best greedy x=%d (saved mario_bc.bin)\n", best_x);
+    return 0;
+}
+
+// DAgger: stabilize BC against distribution shift. Plain BC caps at ~2471 because
+// the greedy policy drifts into states the demos never visited and then guesses
+// wrong. DAgger fixes this by AGGREGATING the states the learner actually visits,
+// each labeled with an "expert" action, then retraining. We have no queryable
+// expert, so we use the demo's action AT THE SAME LEVEL-X as an approximate oracle
+// (the clear demo is ~monotonic in x, so "what the demo did around here" is a good
+// recovery target). Rounds: train on the dataset, roll out greedy, add its visited
+// (state -> demo-action-at-that-x) pairs, repeat -> the policy learns to recover
+// toward demo behavior from off-demo states.
+static int dagger_train(const char* rom) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+
+    std::vector<std::vector<float>> X;   // states
+    std::vector<int> Y;                  // target actions
+    auto add_demo = [&](const std::string& path) {
+        std::vector<uint8_t> acts;
+        if (!load_actions(path, acts) || acts.empty()) return;
+        std::vector<float> s = env.reset(); bool d = false; size_t n0 = X.size();
+        for (size_t t = 0; t < acts.size() && !d; ++t) {
+            X.push_back(s); Y.push_back((int)acts[t]);
+            env.step(acts[t], d); s = env.observation();
+        }
+        std::printf("  + %-24s %5zu pairs (x=%d won=%d)\n", path.c_str(), X.size() - n0, env.mario_x(), (int)env.won());
+    };
+    add_demo("demo.bin");
+    for (int i = 0; i < 8; ++i) add_demo("demo_win_" + std::to_string(i) + ".bin");
+    add_demo("demo_clear_fromstart.bin");
+    int N_demo = (int)X.size();
+    if (N_demo == 0) { std::printf("no clear demos for DAgger\n"); return 1; }
+
+    // Approximate expert oracle: demo.bin's action indexed by the level-x it was at.
+    std::vector<int> demo_x, demo_a;
+    {
+        std::vector<uint8_t> acts; load_actions("demo.bin", acts);
+        std::vector<float> s = env.reset(); bool d = false;
+        for (size_t t = 0; t < acts.size() && !d; ++t) { demo_x.push_back(env.mario_x()); demo_a.push_back((int)acts[t]); env.step(acts[t], d); }
+    }
+    auto label_at_x = [&](int x) {
+        int best = 0;                                   // last demo step with demo_x <= x (x is ~monotonic)
+        for (int i = 0; i < (int)demo_x.size(); ++i) { if (demo_x[i] <= x) best = i; else break; }
+        return demo_a[best];
+    };
+
+    QNet net(S, A, HID);
+    Adam opt(net.params(), 5e-4f);
+    auto params = net.params();
+    const int rounds = 60, epochs_per = 20, mb = 64;
+    int best_x = 0;
+    std::printf("DAgger start: %d demo pairs | rounds=%d epochs/round=%d\n", N_demo, rounds, epochs_per);
+    std::fflush(stdout);
+
+    for (int rd = 1; rd <= rounds; ++rd) {
+        int N = (int)X.size();
+        std::vector<int> idx(N); for (int i = 0; i < N; ++i) idx[i] = i;
+        double loss_acc = 0; int nb = 0;
+        for (int ep = 0; ep < epochs_per; ++ep) {
+            for (int i = N - 1; i > 0; --i) { int j = (int)(ag::randf() * (i + 1)); std::swap(idx[i], idx[j]); }
+            for (int b0 = 0; b0 + mb <= N; b0 += mb) {
+                auto xs = Tensor::zeros({mb, S}, false);
+                std::vector<float> oh(mb * A, 0.f);
+                for (int b = 0; b < mb; ++b) { int e = idx[b0 + b]; for (int k = 0; k < S; ++k) xs.data()[b * S + k] = X[e][k]; oh[b * A + Y[e]] = 1.f; }
+                auto logits = net.forward(xs);
+                auto loss = mul_scalar(sum(mul(log_softmax_rows(logits), Tensor::from(oh, {mb, A}, false))), -1.0f / mb);
+                opt.zero_grad(); loss.backward(); clip_grads(params, 10.f); opt.step();
+                loss_acc += loss.data()[0]; ++nb;
+            }
+        }
+        int px = greedy_episode(net, env); bool won = env.won();
+        if (px > best_x) { best_x = px; net.save("mario_bc.bin"); }
+        std::printf("round %2d  dataset %6d  loss %.3f  greedy_x %4d %s  best %d\n",
+                    rd, N, loss_acc / std::max(1, nb), px, won ? "<<< WON" : "", best_x);
+        std::fflush(stdout);
+        if (won) { net.save("mario_bc.bin"); std::printf("*** DAgger greedy CLEARED 1-1 (x=%d, round %d) -> mario_bc.bin ***\n", px, rd); break; }
+        // Aggregate: roll out greedy (learner distribution), label each visited state
+        // with the demo action at that x, add to the dataset.
+        std::vector<float> s = env.reset(); bool d = false; int added = 0;
+        while (!d && added < 2000) {
+            int a = greedy_action(net, s);
+            X.push_back(s); Y.push_back(label_at_x(env.mario_x()));
+            env.step(a, d); s = env.observation(); ++added;
+        }
+    }
+    std::printf("DAgger done. best greedy x=%d (mario_bc.bin)\n", best_x);
+    return 0;
 }
 
 // Replay a saved FROM-BOOT action sequence (e.g. a captured winning run) and
@@ -249,7 +421,7 @@ static int scoretest(const char* rom, const char* weights) {
     std::printf("start: score=%d coins=%d power=%d (0=small 1=super 2=fire)\n", last_score, last_coins, last_pow);
     bool done = false;
     for (int t = 0; t < 600 && !done; ++t) {
-        int a = have ? greedy_action(net, s) : mario::A_RIGHT_B;
+        int a = have ? greedy_action(net, s) : mario::A_RUNRIGHT;
         env.step(a, done);
         s = env.observation();
         int sc = score_of(), co = nes::ram(0x075E), pw = nes::ram(0x0756);
@@ -323,7 +495,7 @@ static int tilescan(const char* rom) {
     if (!env.init(rom)) return 1;
     env.reset();
     bool done;
-    for (int t = 0; t < 20; ++t) env.step(mario::A_RIGHT_B, done);  // walk in a bit
+    for (int t = 0; t < 20; ++t) env.step(mario::A_RUNRIGHT, done);  // walk in a bit
     int lx = nes::ram(0x006D) * 256 + nes::ram(0x0086);
     int px = nes::ram(0x0086), py = nes::ram(0x00CE);
     std::printf("level_x=%d  px(0x86)=%d  py(0xCE)=%d\n", lx, px, py);
@@ -403,12 +575,7 @@ static int finditem(const char* rom) {
                 (int)starts.size(), (int)starts.size() - 1);
     seed(20260716);
     auto biased = []() {                     // favor jump-right so blocks get hit / enemies stomped
-        float u = ag::randf();
-        if (u < 0.40f) return (int)mario::A_RIGHT_A;
-        if (u < 0.60f) return (int)mario::A_RIGHT_AB;
-        if (u < 0.80f) return (int)mario::A_RIGHT;
-        if (u < 0.90f) return (int)mario::A_A;
-        return (int)mario::A_RIGHT_B;
+        return (int)(ag::randf() * mario::N_ACTIONS) % mario::N_ACTIONS;   // uniform (works for 3- or 5-action)
     };
     // Build a from-boot sequence: demo prefix to the start checkpoint + rollout.
     auto build = [&](int prefix, const std::vector<uint8_t>& acts, int upto) {
@@ -461,7 +628,7 @@ static int envtest(const char* rom) {
     env.reset();
     std::printf("after reset: x=%d\n", env.mario_x());
     for (int t = 0; t < 40; ++t) {
-        bool done; float r = env.step(mario::A_RIGHT_B, done);   // run right
+        bool done; float r = env.step(mario::A_RUNRIGHT, done);   // run right
         const auto& o = env.observation();
         // obs[4..18] are the 5 enemy slots (active, rel_x, rel_y). Print any active one.
         std::string en;
@@ -513,6 +680,10 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "eval") == 0)
         return evalnet(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes",
                        argc > 3 ? argv[3] : "mario_best.bin");
+    if (argc > 1 && std::strcmp(argv[1], "bc") == 0)          // behavior cloning from clear demos
+        return bc_train(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
+    if (argc > 1 && std::strcmp(argv[1], "dagger") == 0)      // BC + DAgger aggregation (stabilize)
+        return dagger_train(argc > 2 ? argv[2] : "Super Mario Bros (JU) (PRG 0).nes");
 
     // Training. Usage: mario_dqn [ROM] [seed] [out.bin]
     // Parallelism: launch N processes with distinct seeds and out paths (each
@@ -559,6 +730,8 @@ int main(int argc, char** argv) {
     float eps_decay_steps = warm ? 100000.f : 250000.f;
     opt.lr = arg_lr > 0.f ? arg_lr : (warm ? 1.0e-4f : 2.5e-4f);
     target.copy_from(online); best.copy_from(online);
+    QNet ema(S, A, HID); ema.copy_from(online);   // EMA net: evaluated & saved (stable greedy)
+    const float ema_decay = 0.999f;
 
     // Curriculum: if a demonstration exists, precompute snapshots across the back
     // half of it, then start most episodes at one of those checkpoints (near the
@@ -594,7 +767,7 @@ int main(int argc, char** argv) {
     // similar distance, the higher-scoring one (more coins/power-ups) is kept --
     // while distance still dominates, keeping the flag as the primary objective.
     int best_x = 0, best_score = 0, best_metric = -1;
-    if (warm) { best_x = greedy_episode(online, env, &best_score); best_metric = best_x + best_score; }
+    if (warm) { best_x = greedy_episode(ema, env, &best_score); best_metric = best_x + best_score; }
     std::printf("   warm-start greedy x=%d score=%d | freeze_base=%d (HID=%d base=%d)\n",
                 best_x, best_score, (int)freeze_base, HID, OLD_HID);
 
@@ -721,6 +894,7 @@ int main(int argc, char** argv) {
                 opt.zero_grad(); loss.backward();
                 if (freeze_base) freeze_base_grads(params, S, HID, A, OLD_HID);
                 clip_grads(params, 10.f); opt.step();
+                ema_update(ema, online, ema_decay);   // smooth the oscillating online net
             }
             if (total_steps % target_sync == 0) target.copy_from(online);
             throttle.maybe_sleep();   // yield CPU so the machine stays usable
@@ -798,15 +972,15 @@ int main(int argc, char** argv) {
         // Checkpoint by GREEDY skill (not by exploration luck), like CartPole/Othello.
         if (ep % 25 == 0 && (int)replay.size() >= warmup) {
             int gs = 0, gp = 0;
-            int gx = greedy_episode(online, env, &gs, &gp);
-            int metric = gx + gs;
+            int gx = greedy_episode(ema, env, &gs, &gp);   // evaluate the STABLE EMA net
+            int metric = gx;   // progress objective: keep the farthest net
             if (metric > best_metric) {
                 best_metric = metric; best_x = gx; best_score = gs;
-                best.copy_from(online); best.save(out_path.c_str());
+                best.copy_from(ema); best.save(out_path.c_str());   // save the EMA net
             }
-            // Also save the CURRENT (not just best) net every eval, so its live
-            // greedy behavior can be recorded/watched even while it's below 2017.
-            online.save(("mario_latest_" + std::to_string(seed_val) + ".bin").c_str());
+            // Also save the CURRENT EMA net every eval, so its live greedy behavior
+            // can be recorded/watched even while it's below the best.
+            ema.save(("mario_latest_" + std::to_string(seed_val) + ".bin").c_str());
             float eps = std::max(eps_end, eps_start - (eps_start - eps_end) * total_steps / eps_decay_steps);
             std::printf("ep %4d  ret %7.1f  train_max_x %4d  avg50 %6.1f  GREEDY_x %4d  score %4d  power %d  best_greedy %4d  best_score %4d  eps %.2f  steps %ld\n",
                         ep, ep_ret, ep_max_x, avg_x, gx, gs, gp, best_x, best_score, eps, total_steps);

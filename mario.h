@@ -13,9 +13,26 @@
 
 namespace mario {
 
-// Discrete action set (right-biased, like gym's SIMPLE_MOVEMENT subset).
-// B = run/fire, A = jump.
+// Action set is selectable at build time via MARIO_ACTIONS (5 = default, 3 = the
+// "human-strategy" set). Build the 3-action variant with -DMARIO_ACTIONS=3
+// (CMake target `mario_dqn3`). Nets/demos are action-set-specific, so pick one.
+#ifndef MARIO_ACTIONS
+#define MARIO_ACTIONS 5
+#endif
+#if MARIO_ACTIONS == 3
+// Human-strategy set: a person basically ALWAYS holds RIGHT+B (run), presses A to
+// jump a pit/enemy/pipe, and to stomp releases RIGHT/B and presses A (straight-up
+// hop). So the whole job is "when/how to jump" -- 3 actions, no left/idle/walk,
+// which drastically shrinks the decision space (from scratch, exploration reaches
+// a full 1-1 clear far sooner than the 5-action set).
+//   A_RUN=RIGHT+B (run, default) | A_RUNJUMP=RIGHT+A+B (running jump) | A_STOMP=A (hop)
+enum { A_RUN, A_RUNJUMP, A_STOMP, N_ACTIONS };
+static constexpr int A_RUNRIGHT = A_RUN;         // "run right" alias for tooling
+#else
+// Original right-biased set (like gym's SIMPLE_MOVEMENT subset). B=run/fire, A=jump.
 enum { A_RIGHT, A_RIGHT_A, A_RIGHT_B, A_RIGHT_AB, A_A, N_ACTIONS };
+static constexpr int A_RUNRIGHT = A_RIGHT_B;
+#endif
 
 class Env {
 public:

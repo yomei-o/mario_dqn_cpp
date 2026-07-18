@@ -39,9 +39,16 @@ static int tile_at(int x_px, int y_px) {
     return RAM(0x0500 + page * 0xD0 + row * 16 + colp);
 }
 
-// Button mask for each discrete action.
+// Button mask for each discrete action (matches the MARIO_ACTIONS build variant).
 static uint8_t action_buttons(int a) {
     using namespace nes;
+#if MARIO_ACTIONS == 3
+    switch (a) {
+        case A_RUN:     return RIGHT | B;       // run right (default)
+        case A_RUNJUMP: return RIGHT | A | B;   // running jump (clear pit/enemy/pipe)
+        case A_STOMP:   return A;               // straight-up hop (stomp / fine timing)
+    }
+#else
     switch (a) {
         case A_RIGHT:    return RIGHT;
         case A_RIGHT_A:  return RIGHT | A;
@@ -49,6 +56,7 @@ static uint8_t action_buttons(int a) {
         case A_RIGHT_AB: return RIGHT | A | B;
         case A_A:        return A;
     }
+#endif
     return 0;
 }
 

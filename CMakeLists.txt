@@ -46,6 +46,23 @@ if (WIN32)
     target_link_libraries(mario_dqn PRIVATE winmm)
 endif()
 
+# 3-action "human-strategy" variant (RUN / RUNJUMP / STOMP). Same sources, built
+# with -DMARIO_ACTIONS=3. From scratch, exploration reaches a full 1-1 clear far
+# sooner than the 5-action set (see RESUME). Nets/demos are action-set-specific.
+add_executable(mario_dqn3 mario_dqn.cpp mario.cpp nes.cpp autograd.cpp ${LAINES_SRC})
+target_include_directories(mario_dqn3 PRIVATE . third_party/laines/include)
+target_compile_definitions(mario_dqn3 PRIVATE MARIO_ACTIONS=3)
+if (MSVC)
+    target_compile_options(mario_dqn3 PRIVATE /O2 /permissive-)
+else()
+    target_compile_options(mario_dqn3 PRIVATE -O2)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mario_dqn3 PRIVATE Threads::Threads)
+endif()
+if (WIN32)
+    target_link_libraries(mario_dqn3 PRIVATE winmm)
+endif()
+
 # Phase 4: DQN x Super Mario 1-2 (underground). Separate trainer/env from 1-1,
 # sharing the level-agnostic core (mario_shared.h). Warm-starts from a 1-1 net.
 add_executable(mario12_dqn train12.cpp mario12.cpp nes.cpp autograd.cpp ${LAINES_SRC})
