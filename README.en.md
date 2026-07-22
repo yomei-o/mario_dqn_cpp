@@ -112,6 +112,30 @@ Result: solves CartPole (greedy eval reaches the 500-step cap).
 - **ε-greedy**: exploration decays 1.0 → 0.05
 - **Stability**: global-norm gradient clipping + Adam + best-net checkpointing
 
+## See the results in the browser 🍄
+
+You can **record → replay in the browser** a 1-1 play by the trained agent (`web/`).
+
+```powershell
+# 1) Record a greedy play (produces web/run.bin: an RGB stream of frame/agent-step)
+build/Release/mario_dqn.exe record "Super Mario Bros (JU) (PRG 0).nes" mario_best.bin web/run.bin
+
+# 2) Start a simple HTTP server (either one)
+python web/serve.py           # Python version -> http://localhost:8000
+build/Release/server.exe      # cpp-httplib version (single-header, MIT) -> http://localhost:8080
+
+# 3) Open it in the browser and the play replays on a canvas
+```
+
+`web/index.html` fetches `run.bin` (a header of `MRUN` + nframes + w + h, followed by a stream of
+w*h*3 RGB frames) and replays it on a canvas. Note: since the net is still mid-training, a greedy
+play runs out of steam at the first Goomba (x=312); once training converges the recording will go
+further ([`RESUME.md`](RESUME.md)).
+
+This native record → replay is the earlier stage; **Phase 4 is already done**: the whole NES + DQN
+is compiled to WASM and [runs the emulator + inference live in the browser](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn/)
+(see "Play in the browser" above).
+
 ## About Super Mario (Phase 2+)
 
 - Embeds a **real NES emulator (LaiNES)** (same lineage as the core of `gym-super-mario-bros`)
