@@ -9,6 +9,16 @@ emulator**. DQN is the **value-based, off-policy** counterpart to the AlphaZero
 
 The autograd is reused from [mini-yolov5-cpp](https://github.com/yomei-o/mini-yolov5-cpp).
 
+## 🎮 Latest play: DQN clears Super Mario Bros 1-1 from the start on its own
+
+![DQN plays Super Mario Bros 1-1](docs/mario_1-1_clear.gif)
+
+The self-made autograd + DQN (CPU only), looking at **RAM features alone**, plays **1-1 all the
+way from the start to the flagpole** (a recording of deterministic, reproducible real play, at
+roughly 2× speed). Score-first reward shaping makes it **stomp enemies and rack up coins/points**
+on its way to the goal. See [`RESUME.md`](RESUME.md) for how training and recording work. The GIF
+is generated from `web/run.bin` (the recording) with `ffmpeg` ([`tools/make_gif.sh`](tools/make_gif.sh)).
+
 ## 🕹️ Play in the browser (WASM)
 
 The **whole NES (LaiNES) + DQN inference stack is compiled to WebAssembly**, so you can run
@@ -24,6 +34,24 @@ the ROM yourself via file picker (**it is never uploaded**).
 > training, WASM) as a reusable template**. A "full clear" of each stage is left open as headroom
 > (they piggyback on `train_common.hpp` / `mario_shared.h`; swap in at the same URL via
 > `NET=... build_wasmXX.sh`).
+
+## 🚇 Taking on World 1-2 (Phase 5)
+
+![DQN progresses into Super Mario Bros 1-2](docs/mario_1-2_partway.gif)
+
+1-2 is an underground stage where clearing requires **entering a pipe**, so it is a different
+beast from 1-1. The first goal is play that gets **partway through** (the GIF above is a recording
+of an exploration policy reaching x≈1202 in the early-to-mid part of 1-2). Stage-specific elements
+(start position, clear condition, **a reward with a separate bonus for entering the pipe**) are
+split off from 1-1, while the **common core** for observation/action/emulator-driving is shared
+(`mario_shared.h` / `mario12.*` / `train12.cpp`).
+
+1-2 has a timing gotcha where you must "**wait for a turtle walking on the far side of a pit**
+before jumping" — a right-biased policy can't get past it. So a **NOOP (wait)** action is added to
+1-2's action set, and the reward is redesigned to be **ratchet-based for progress with no penalty
+for waiting**, after which the trained agent actually learns to *wait, then jump* (warm-started
+from the 1-1 net, up to x≈978). Reaching the exit pipe / flag (= a full clear) is not there yet;
+the plan is to capture one clear by exploration → BC as the next step ([`RESUME.md`](RESUME.md)).
 
 ## Roadmap
 
