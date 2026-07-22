@@ -9,6 +9,22 @@ emulator**. DQN is the **value-based, off-policy** counterpart to the AlphaZero
 
 The autograd is reused from [mini-yolov5-cpp](https://github.com/yomei-o/mini-yolov5-cpp).
 
+## 🕹️ Play in the browser (WASM)
+
+The **whole NES (LaiNES) + DQN inference stack is compiled to WebAssembly**, so you can run
+both "replay of a clear run" and "live inference of the trained net" in the browser. You load
+the ROM yourself via file picker (**it is never uploaded**).
+
+- **[▶ 1-1 demo: yomei-o.github.io/mario_dqn_cpp/mario-dqn](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn/)** — full clear from start to the flagpole + live inference.
+- **[▶ 1-2 demo: yomei-o.github.io/mario_dqn_cpp/mario-dqn-1-2](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn-1-2/)** — after the 1-1 clear → 1-2 transition, the trained agent (with a NOOP = wait action) waits out the mid-level "pit + turtle" to break through (x≈978; the goal is still being learned).
+- **[▶ 1-3 demo](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn-1-3/)** — starts directly via a **RAM level warp** (no 1-2 clear needed). The trained agent reaches the mid-air platform zone at x≈627.
+- **[▶ 1-4 demo](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn-1-4/)** — warps into the castle stage (axe clear). The trained agent reaches the early section at x≈302.
+
+> The main purpose of 1-2–1-4 is to provide the **per-level framework (env, reward, warp start,
+> training, WASM) as a reusable template**. A "full clear" of each stage is left open as headroom
+> (they piggyback on `train_common.hpp` / `mario_shared.h`; swap in at the same URL via
+> `NET=... build_wasmXX.sh`).
+
 ## Roadmap
 
 | Phase | What | Status |
@@ -16,7 +32,7 @@ The autograd is reused from [mini-yolov5-cpp](https://github.com/yomei-o/mini-yo
 | **1** | **Prove the DQN core on CartPole** (replay, target net, Double DQN, ε-greedy, grad clipping, Adam) | ✅ done |
 | **2** | Embed **LaiNES** (C++ NES emulator); headless `step/obs/reward/done` API | ✅ done |
 | **3** | DQN × Super Mario (**RAM features**: Mario x/y, velocity, enemies); learn to go far | 🚧 in progress |
-| 4 | Compile NES + DQN to **WASM (Emscripten)**; play in the browser (HTML + JS canvas) | planned |
+| **4** | Compile NES + DQN to **WASM (Emscripten)**; play in the browser (HTML + JS canvas) | ✅ done ([live demo](https://yomei-o.github.io/mario_dqn_cpp/mario-dqn/)) |
 
 > **Resuming later?** Current status and next steps are in [`RESUME.md`](RESUME.md).
 
