@@ -76,6 +76,15 @@ public:
     int checkpoint_demo_len(int k) const { return ckpt_target_[k]; }
     const std::vector<uint8_t>& demo_actions() const { return demo_; }
     const std::vector<float>& reset_to_checkpoint(int k);
+    // Full env snapshot (emulator + episode bookkeeping), for search tools that
+    // branch from a mid-episode state and continue with step() as if unbroken.
+    struct Snapshot {
+        std::vector<uint8_t> nes;
+        int prev_x, steps, start_lives, max_x, stall, prev_score, prev_power;
+        bool won;
+    };
+    void snapshot(Snapshot& s) const;
+    void restore(const Snapshot& s);
     float step(int action, bool& done);       // apply action FRAME_SKIP frames
     const std::vector<float>& observation() const { return obs_; }
     int mario_x() const;                       // level x-position (for logging)

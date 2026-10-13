@@ -4,6 +4,29 @@
 読めば続きを進められるようにしてある。シリーズ全体は各リポジトリのREADME参照。
 
 ---
+## 🟢 2026-10-13: GPU 学習（DQfD）で **greedy が先頭から 1-1 クリア**（目標達成）
+
+- **新規ファイル**: `mario_gpu.cpp`（searchdemo / cleandemo / train / actor / eval / record / parity / bench）、
+  `dqn_learner.h` + `dqn_learner_cpu.cpp` + `dqn_learner_cuda.cu`（同じ DQfD 損失の CPU/CUDA 2 実装。parity で一致確認）、
+  `kaggle/train_gpu.sh`。`mario.h/.cpp` には `Env::snapshot/restore` を追加しただけ（既存ターゲットは全部ビルド確認済み）。
+  CMake の `mario_gpu` ターゲットは nvcc があれば CUDA ラーナーを有効にする（`-DCMAKE_CUDA_ARCHITECTURES=` を明示すること。
+  ビルド機の CUDA 13.3 + 古いドライバでは `native` が PTX だけになり "unsupported toolchain" で落ちた → `86-real`）。
+- **効いたこと（順番に）**:
+  1. 既存のクリアデモ（ランダム探索で拾ったもの）は `S`（A だけ）や小ジャンプが散らばっていて、ネットがデモ状態を
+     435/438 までしか当てられない。外れはジャンプの踏み切りタイミング。`cleandemo`（不要な操作を run に置換）でも直らない。
+  2. `searchdemo`: run を基本にして、詰まったら踏み切りステップ×押す長さを総当たりする。ただし「間に合う一番遅い踏み切り」を
+     選ぶとギリギリすぎて、1 ステップずれただけで死ぬ（greedy 1444 止まり）。
+  3. **近傍 (±1 step, ±1 hold) でも成功するタイミングを選ぶ**（robust pick）→ `warmstarts/demo_robust_1-1_3act.bin`（471 手、36 ジャンプ）。
+     これで DQfD は 6 分で greedy 2994。アクター16本では **5.2 分で greedy クリア**（412 手。デモより短い自分の走り）。
+- **成果物**: `warmstarts/dqfd_gpu_clear_1-1_3act_hid512.bin`（MSVC と gcc/Linux の両方で 412 手、x=3161、ポール掴みまで確認）。
+  動画は `docs/mario_1-1_gpu_dqfd_clear.gif`。
+- **速度の実測**: エミュは 3090 機で 130 step/s/コア、Kaggle は 64〜71 step/s/コア。LTO+O3 にしても速くならなかった。
+  GPU はほぼ遊んでいる（replay ratio 16 で制限）。**律速はエミュ**なので、効くのはアクターの本数。
+- **Kaggle**: kbridge 経由で `kaggle/train_gpu.sh` を `/job` で投げる（3 アクター + T4）。
+- **次の一手（ユーザー要望: キノコ）**: キノコを取らないのですぐ死ぬ。報酬だけでは過去に全滅しているので、
+  `searchdemo` を拡張して「?ブロックを叩いてキノコを取る」区間を含むデモを探索で作り、DQfD に渡すのが筋。
+
+---
 ## 🟢 2026-07-19: 行動集合を「人間の手」に絞る実験（3行動 vs 5行動を選択可能に）
 
 **ユーザーの洞察**: 人間のマリオ操作は基本ずっと `RIGHT+B`（走る）、穴/敵/土管で `A`（前飛び）、踏むときは右とBを離して `A`。

@@ -17,6 +17,39 @@ autograd は [mini-yolov5-cpp](https://github.com/yomei-o/mini-yolov5-cpp) の�
 
 自作autograd＋DQN（CPUのみ）が、RAM特徴量だけを見て **1-1 をスタートからフラッグポールまで通しプレイ**（決定的に再現される実プレイの録画。約2倍速）。得点優先の報酬シェーピングで**敵を踏み・コイン/得点を稼ぎながら**ゴールする。学習・録画の仕組みは [`RESUME.md`](RESUME.md) 参照。GIFは `ffmpeg` で `web/run.bin`（録画）から生成（[`tools/make_gif.sh`](tools/make_gif.sh)）。
 
+## ⚡ GPU 学習（DQfD）：greedy 方策がスタートから 1-1 を自力クリア
+
+![GPU DQfD greedy clears 1-1](docs/mario_1-1_gpu_dqfd_clear.gif)
+
+上の GIF は録画の再生ではなく、**学習したネットの greedy 推論そのもの**（412 手でポールをつかみ、旗が降りて城へ）。
+ネットは [`warmstarts/dqfd_gpu_clear_1-1_3act_hid512.bin`](warmstarts/)（3行動・隠れ512）。MSVC/Windows と gcc/Linux の
+両方で、同じ 412 手でクリアすることを確認済み。
+
+仕組み（[`mario_gpu.cpp`](mario_gpu.cpp)）:
+
+1. **きれいなデモを探索で作る**（`mario_gpu searchdemo`）: 基本は「走る」、障害で詰まったらセーブステートから
+   「何ステップ前に踏み切り、何ステップ押し続けるか」を総当たりする。さらに **踏み切り ±1・押す長さ ±1 でも成功する余裕のある
+   タイミング**を選ぶ。ランダム探索で拾ったクリア（ジャンプや小ジャンプが散らばっている）は、ネットが観測から再現できない
+   操作列だった。これが以前の BC が 900〜2370 で止まった原因。
+2. **DQfD**: Double-DQN の TD 損失に、デモ状態ではデモの行動を他より margin 以上高くする損失を加える。
+   事前学習で greedy がデモをなぞるようにしておき、強化学習でデモから外れた状態からの立て直しを覚えさせる。
+3. **Ape-X 型の並列化**: NES エミュは 1 プロセスに 1 つしか持てないので、ε の異なる **CPU アクターを複数プロセス**で走らせる
+   （半分のエピソードはデモ上のチェックポイントから開始）。**ラーナーは 1 つで、GPU（CUDA + cuBLAS）**上で大きなバッチを学習する。
+   CPU 版ラーナーも同じ計算で持っていて、`mario_gpu parity` で GPU と一致することを確認できる（3090 / T4 で重みの差は 1e-5 未満）。
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86   # nvcc が無ければ CPU ラーナーで動く
+cmake --build build --target mario_gpu
+./build/mario_gpu searchdemo "$ROM" demo.bin                  # 走る+ジャンプだけのクリアデモ（数分〜20分）
+./build/mario_gpu train "$ROM" demo.bin 16 40                 # アクター16本、最長40分。greedy でクリアした時点で終了
+./build/mario_gpu record "$ROM" mario_gpu_clear.bin run.bin   # → tools/make_gif.sh run.bin out.gif
+```
+
+実測: RTX 3090 + アクター16本（約1100 env step/s）で **5.2 分**でクリア。Kaggle（T4、4 vCPU）では
+[kaggle_server_cpp](https://github.com/yomei-o/kaggle_server_cpp) 経由で [`kaggle/train_gpu.sh`](kaggle/train_gpu.sh) を
+`/job` として投げる。ただし Kaggle はアクターが 3 本しか置けず、エミュも 64 step/s/コアと遅いので、
+進みはおよそ 1/6 になる。律速は GPU ではなくエミュレータ。
+
 ## 🕹️ ブラウザでライブプレイ（WASM）
 
 NES(LaiNES)＋DQN推論を**丸ごとWebAssembly化**。ブラウザ上で「クリア走行の再生」と

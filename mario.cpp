@@ -200,6 +200,19 @@ const std::vector<float>& Env::reset_to_checkpoint(int k) {
     return obs_;
 }
 
+void Env::snapshot(Snapshot& s) const {
+    nes::save_state(s.nes);
+    s.prev_x = prev_x_; s.steps = steps_; s.start_lives = start_lives_; s.max_x = max_x_;
+    s.stall = stall_; s.prev_score = prev_score_; s.prev_power = prev_power_; s.won = won_;
+}
+
+void Env::restore(const Snapshot& s) {
+    nes::load_state(s.nes);
+    prev_x_ = s.prev_x; steps_ = s.steps; start_lives_ = s.start_lives; max_x_ = s.max_x;
+    stall_ = s.stall; prev_score_ = s.prev_score; prev_power_ = s.prev_power; won_ = s.won;
+    build_obs();
+}
+
 float Env::step(int action, bool& done) {
     // Snapshot enemy state BEFORE advancing, so we can detect a stomp this step:
     // an enemy that was active and just ahead of / below Mario, gone after the
