@@ -24,7 +24,8 @@
 //   mario_gpu record ROM net.bin out.bin          MRUN video of the greedy run (tools/make_gif.sh)
 //   mario_gpu parity                              CPU vs CUDA learner on identical batches
 //   mario_gpu bench ROM                           emulator steps/sec
-// Env: MARIO_LEARNER=cpu forces the CPU learner; MARIO_RATIO = replay ratio (default 16).
+// Env: MARIO_LEARNER=cpu forces the CPU learner; MARIO_RATIO = replay ratio (default 16);
+//      MARIO_LR = RL learning rate (default 1e-4); MARIO_EVAL_SEC = greedy eval period (default 30).
 #include "autograd.h"
 #include "qnet.h"
 #include "mario.h"
@@ -596,7 +597,8 @@ static int train(const char* exe, const char* rom, const char* demo_path, int n_
     const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
     const int B = 256, target_sync = 2000, publish_every = 200, pretrain_steps = 30000;
     const float demo_frac = 0.25f;
-    const double eval_period = 30.0;
+    double eval_period = 30.0;
+    if (const char* e = std::getenv("MARIO_EVAL_SEC")) eval_period = std::atof(e);
     float ratio = 16.f;
     if (const char* e = std::getenv("MARIO_RATIO")) ratio = (float)std::atof(e);
 
@@ -610,11 +612,13 @@ static int train(const char* exe, const char* rom, const char* demo_path, int n_
     if (!(want && std::strcmp(want, "cpu") == 0)) L = rl::make_cuda_learner(S, A, HID);
     if (!L) L = rl::make_cpu_learner(S, A, HID);
     L->lr = 1e-4f;
+    if (const char* e = std::getenv("MARIO_LR")) L->lr = (float)std::atof(e);
 
     ag::seed(1);
     rl::QNet net(S, A, HID);
+    bool warmed = false;
     if (warm && *warm) {
-        if (net.load(warm)) std::printf("   warm start: %s\n", warm);
+        if ((warmed = net.load(warm))) std::printf("   warm start: %s (demo pre-training skipped)\n", warm);
         else std::printf("   (could not load %s, starting fresh)\n", warm);
     }
     std::vector<std::vector<float>> P;
@@ -689,9 +693,10 @@ static int train(const char* exe, const char* rom, const char* demo_path, int n_
 
     // DQfD pre-training on the demo alone until the net reproduces every demo
     // action (then the greedy run from the start IS the demo, deterministically).
+    // Skipped on a warm start: its high LR would overwrite the loaded policy.
     const float lr_rl = L->lr;
     L->lr = 5e-4f;
-    for (int i = 1; i <= pretrain_steps; ++i) {
+    for (int i = 1; i <= (warmed ? 0 : pretrain_steps); ++i) {
         sample(B);
         float l = L->train(batch);
         if (i % target_sync == 0) L->sync_target();
