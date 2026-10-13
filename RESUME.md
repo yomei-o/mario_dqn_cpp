@@ -35,7 +35,9 @@
   - 修正後の probe で Kaggle の 2995 ネットから再開 → 3090 機で **3.9 分でクリア**（404 手）。
     `warmstarts/dqfd_gpu_clear_1-1_3act_wall_hid512.bin` はこの修正後のネット（obs 169 次元）。
   - Kaggle（T4、4 アクター）でも修正前 probe の観測で **24.8 分で greedy クリア**（420 手、ポール確認）。ただしそのネットは
-    修正前 probe 専用で、今の観測では x=2978 止まり。修正後 probe での Kaggle 再走を投入済み。
+    修正前 probe 専用で、今の観測では x=2978 止まり。
+  - **修正後 probe で Kaggle 再走 → 24.8 分で greedy クリア**（427 手、ポール確認、Linux と Windows の両方で再現）。
+    `warmstarts/dqfd_kaggle_t4_clear_1-1_3act_wall_hid512.bin`。
 - **`mario_gpu diagnose ROM net.bin [step]`**: greedy が止まる地点で、行動ごとに「探索で測った報酬上の価値」と「ネットの Q」を並べ、
   REWARD（良い結果の方が報酬が低い）/ OBSERVATION（ほぼ同じ観測で逆の行動）/ LEARNING（報酬も観測も正しいのに Q が違う）を判定する。
   観測検査は「ほぼ完全一致（差 0.05 未満）」しか同一とみなさないので、位置（x/y）だけで区別できてしまう状態は LEARNING に寄る。

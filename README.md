@@ -48,7 +48,9 @@ cmake --build build --target mario_gpu
 実測: RTX 3090 + アクター16本（約1100 env step/s）で **5.2 分**でクリア。Kaggle（T4、4 vCPU）では
 [kaggle_server_cpp](https://github.com/yomei-o/kaggle_server_cpp) 経由で [`kaggle/train_gpu.sh`](kaggle/train_gpu.sh) を
 `/job` として投げる。ただし Kaggle はアクターが 3 本しか置けず、エミュも 64 step/s/コアと遅いので、
-進みはおよそ 1/6 になる。律速は GPU ではなくエミュレータ。
+進みはおよそ 1/6 になる。律速は GPU ではなくエミュレータ。Kaggle で学習したネット
+（[`warmstarts/dqfd_kaggle_t4_clear_1-1_3act_wall_hid512.bin`](warmstarts/)）も greedy でクリアする（24.8 分、427 手）。
+止まる原因の切り分けには `mario_gpu diagnose ROM net.bin [step]`（報酬 / 観測 / 学習のどれが原因かを判定）。
 
 ## 🕹️ ブラウザでライブプレイ（WASM）
 
