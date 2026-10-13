@@ -424,9 +424,29 @@ static int searchdemo(const char* rom, const char* out) {
     return 1;
 }
 
+// Print the wall-probe features along a demo (sanity check of the obs layout).
+static int wallprobe(const char* rom, const char* demo) {
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    std::vector<uint8_t> acts;
+    if (!load_actions(demo, acts)) return 1;
+    env.reset();
+    const int wb = 20 + 2 * mario::Env::TILE_N;
+    bool done = false;
+    for (size_t t = 0; t < acts.size() && !done; ++t) {
+        env.step(acts[t], done);
+        const auto& o = env.observation();
+        std::string bits;
+        for (int k = 0; k < mario::Env::WALL_N; ++k) bits += o[wb + k] > 0.5f ? '#' : '.';
+        if (bits.find('#') != std::string::npos)
+            std::printf("t=%3zu x=%4d y=%3d wall %s\n", t, env.mario_x(), (int)nes::ram(0x00CE), bits.c_str());
+    }
+    return 0;
+}
+
 static int evalnet(const char* rom, const char* weights) {
     rl::QNet net(mario::Env::STATE_DIM, mario::N_ACTIONS, HID);
-    if (!net.load(weights)) { std::printf("cannot load %s\n", weights); return 1; }
+    if (!net.load(weights) && !net.load_expand(weights)) { std::printf("cannot load %s\n", weights); return 1; }
     mario::Env env;
     if (!env.init(rom)) return 1;
     bool won = false;
@@ -438,7 +458,7 @@ static int evalnet(const char* rom, const char* weights) {
 
 static int record(const char* rom, const char* weights, const char* out_path) {
     rl::QNet net(mario::Env::STATE_DIM, mario::N_ACTIONS, HID);
-    if (!net.load(weights)) { std::printf("cannot load %s\n", weights); return 1; }
+    if (!net.load(weights) && !net.load_expand(weights)) { std::printf("cannot load %s\n", weights); return 1; }
     mario::Env env;
     if (!env.init(rom)) return 1;
     std::vector<float> s = env.reset();
@@ -618,7 +638,7 @@ static int train(const char* exe, const char* rom, const char* demo_path, int n_
     rl::QNet net(S, A, HID);
     bool warmed = false;
     if (warm && *warm) {
-        if ((warmed = net.load(warm))) std::printf("   warm start: %s (demo pre-training skipped)\n", warm);
+        if ((warmed = net.load(warm) || net.load_expand(warm))) std::printf("   warm start: %s (demo pre-training skipped)\n", warm);
         else std::printf("   (could not load %s, starting fresh)\n", warm);
     }
     std::vector<std::vector<float>> P;
@@ -772,6 +792,7 @@ int main(int argc, char** argv) {
     const char* rom_default = "Super Mario Bros (JU) (PRG 0).nes";
     if (mode == "bench") return bench(arg(2, rom_default));
     if (mode == "cleandemo" && argc >= 5) return cleandemo(argv[2], argv[3], argv[4]);
+    if (mode == "wallprobe" && argc >= 4) return wallprobe(argv[2], argv[3]);
     if (mode == "searchdemo" && argc >= 4) return searchdemo(argv[2], argv[3]);
     if (mode == "eval" && argc >= 4) return evalnet(argv[2], argv[3]);
     if (mode == "record" && argc >= 5) return record(argv[2], argv[3], argv[4]);

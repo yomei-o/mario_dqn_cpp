@@ -47,7 +47,13 @@ public:
     // obs layout: [0..3] mario pos/vel/state, [4..18] 5 enemy slots,
     // [19..18+TILE_N] terrain grid (solid?), [19+TILE_N] power (0 small/0.5 super/1 fire),
     // [20+TILE_N..19+2*TILE_N] ? -block grid (item/coin blocks to hit from below).
-    static constexpr int STATE_DIM = 19 + TILE_N + 1 + TILE_N;
+    // [20+2*TILE_N..] wall probe: solid? at Mario's OWN height, 3 columns just
+    // ahead x 3 heights (mid-body, one and two tiles up). The fixed-row grid only
+    // covers screen rows 6..12, so on top of the end staircase the step in front
+    // of Mario was invisible and he stood against it until the stall cut-off.
+    // Appended last so older nets warm-start unchanged via QNet::load_expand.
+    static constexpr int WALL_COLS = 3, WALL_ROWS = 3, WALL_N = WALL_COLS * WALL_ROWS;
+    static constexpr int STATE_DIM = 19 + TILE_N + 1 + TILE_N + WALL_N;
     static constexpr int FRAME_SKIP = 4;
     static constexpr int MAX_STEPS = 1200;   // ~ episode time limit (env steps)
     static constexpr int STALL_LIMIT = 90;   // end episode after this many stalled steps

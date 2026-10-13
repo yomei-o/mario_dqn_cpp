@@ -263,6 +263,9 @@ float Env::step(int action, bool& done) {
     // reach at ~1441, below the 2228 this full-speed + evade reward reached).
     float dense = std::max(-25.f, std::min(25.f, dx - 0.1f));
     float r = dense;
+    // Standing still (no new max x) costs a little every step, so being stuck
+    // against a wall is clearly worse than jumping, not just -0.1/step.
+    if (stall_ > 0) r -= 0.5f;
     if (stomped_) r += 12.f;                    // defeated an enemy -> clears the path (risky for small Mario)
     else {
         // Jump-over / evade (user's idea): an enemy that was just ahead is now
@@ -338,6 +341,12 @@ void Env::build_obs() {
     // Power state (0 small / 0.5 super / 1 fire): lets the agent behave more
     // boldly when big (a hit costs power, not a life) and value keeping it.
     obs_[19 + TILE_N] = std::min(1.f, power_state() / 2.f);
+    // Wall probe at Mario's own height (see mario.h). Mario's level x is his
+    // left edge and he is 16px wide; y is the top of his (small) sprite.
+    int wbase = 20 + 2 * TILE_N;
+    for (int c = 0; c < WALL_COLS; ++c)
+        for (int r = 0; r < WALL_ROWS; ++r)
+            obs_[wbase + c * WALL_ROWS + r] = tile_at(lx + 20 + c * 16, py + 8 - r * 16) != 0 ? 1.f : 0.f;
 }
 
 }  // namespace mario
