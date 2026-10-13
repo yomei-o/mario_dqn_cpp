@@ -21,6 +21,7 @@
 //   mario_gpu cleandemo ROM in.bin out.bin        canonicalize a clear demo (non-essential actions -> run)
 //   mario_gpu train ROM demo.bin [actors] [minutes] [warm.bin]
 //   mario_gpu eval ROM net.bin                    greedy run from the start
+//   mario_gpu diagnose ROM net.bin [step] [demo]  why the greedy run stops: REWARD / OBSERVATION / LEARNING
 //   mario_gpu record ROM net.bin out.bin          MRUN video of the greedy run (tools/make_gif.sh)
 //   mario_gpu parity                              CPU vs CUDA learner on identical batches
 //   mario_gpu bench ROM                           emulator steps/sec
@@ -444,6 +445,187 @@ static int wallprobe(const char* rom, const char* demo) {
     return 0;
 }
 
+// Why does the greedy run stop here? Separates the three usual suspects at one
+// state of the greedy run (default: just before its last forward progress):
+//   REWARD       some action leads to a clearly better OUTCOME (alive & farther /
+//                the flag) but a LOWER return -> the reward prefers the worse play.
+//   OBSERVATION  the best action differs from what the net does, and the obs is
+//                (near-)identical to another state where the opposite action was
+//                taken -> the net cannot tell the two apart.
+//   LEARNING     the reward ranks the right action first and the obs is distinct,
+//                but the net's Q still prefers another action -> needs more
+//                training / the actors have not experienced it.
+// "True" action values come from search: after the first action, continue with
+// the net, plain run, or run + one running jump (start x hold grid), and keep the
+// best discounted return (same reward and gamma as training).
+//   mario_gpu diagnose ROM net.bin [step] [demo.bin]
+static int diagnose(const char* rom, const char* weights, int step_arg, const char* demo_path) {
+    const int S = mario::Env::STATE_DIM, A = mario::N_ACTIONS;
+    const int R = mario::A_RUNRIGHT;
+#if MARIO_ACTIONS == 3
+    const int J = mario::A_RUNJUMP;
+#else
+    const int J = mario::A_RIGHT_AB;
+#endif
+    const int H = 120;
+    rl::QNet net(S, A, HID);
+    if (!net.load(weights) && !net.load_expand(weights)) { std::printf("cannot load %s\n", weights); return 1; }
+    mario::Env env;
+    if (!env.init(rom)) return 1;
+    using Snap = mario::Env::Snapshot;
+
+    // Greedy run, remembering the state before every step.
+    std::vector<Snap> snaps;
+    std::vector<std::vector<float>> obs;
+    std::vector<int> act, xs;
+    std::vector<float> s = env.reset();
+    bool done = false;
+    while (!done) {
+        snaps.emplace_back(); env.snapshot(snaps.back());
+        obs.push_back(s);
+        int a = greedy_action(net, s);
+        env.step(a, done);
+        act.push_back(a); xs.push_back(env.mario_x());
+        s = env.observation();
+    }
+    int T = (int)act.size();
+    bool won = env.won();
+    int P = (int)(std::max_element(xs.begin(), xs.end()) - xs.begin());
+    std::printf("greedy run: %d steps, max x=%d at step %d, %s\n", T, xs[P], P,
+                won ? "WON" : (T >= mario::Env::MAX_STEPS ? "time limit" : "ended (death or stall)"));
+    if (won && step_arg < 0) { std::printf("the greedy run clears; pass a step to inspect one anyway\n"); return 0; }
+    // Stuck (no progress for many steps after the max) -> look right after it
+    // stopped; otherwise (death) look a little before the end.
+    bool stalled = !won && T - 1 - P >= 30;
+    int t0 = step_arg >= 0 ? std::min(step_arg, T - 1) : stalled ? std::min(T - 1, P + 1) : std::max(0, P - 2);
+    const char* an[] = {"run", "runjump", "hop", "a3", "a4", "a5"};
+    std::printf("greedy tail (step x action):");
+    for (int t = std::max(0, t0 - 8); t <= std::min(T - 1, t0 + 4); ++t)
+        std::printf("%s %d:%d:%s", t == t0 ? " [" : " ", t, xs[t], an[act[t]]);
+    std::printf("   <- inspecting step %d\n", t0);
+    {
+        std::string wb;
+        for (int k = 20 + 2 * mario::Env::TILE_N; k < S; ++k) wb += obs[t0][k] > 0.5f ? '#' : '.';
+        std::printf("state at step %d: x=%d y=%.0f vx=%.2f air=%.2f wall-probe %s\n", t0, t0 > 0 ? xs[t0 - 1] : 0,
+                    obs[t0][1] * 255, obs[t0][2], obs[t0][3], wb.c_str());
+    }
+
+    // Search the value of each first action.
+    struct Out { double G = -1e30; int maxx = 0; bool alive = false, won = false; };
+    auto outcome_key = [](const Out& o) { return o.won ? 1e9 : (o.alive ? 1e5 : 0) + o.maxx; };
+    auto rollout = [&](int a0, int cont, int js, int jd) {
+        env.restore(snaps[t0]);
+        Out o; o.G = 0; double g = 1;
+        bool dn = false;
+        std::vector<float> cur = env.observation();
+        for (int k = 0; k < H && !dn; ++k) {
+            int a = a0;
+            if (k > 0) {
+                if (cont == 0) a = greedy_action(net, cur);
+                else if (cont == 1) a = R;
+                else a = (k - 1 >= js && k - 1 < js + jd) ? J : R;
+            }
+            float r = env.step(a, dn);
+            o.G += g * r; g *= GAMMA;
+            o.maxx = std::max(o.maxx, env.mario_x());
+            cur = env.observation();
+        }
+        o.won = env.won(); o.alive = !dn || o.won;
+        return o;
+    };
+    std::vector<Out> bestG(A), bestO(A);   // per first action: best return / best outcome
+    for (int a0 = 0; a0 < A; ++a0) {
+        auto consider = [&](const Out& o) {
+            if (o.G > bestG[a0].G) bestG[a0] = o;
+            if (outcome_key(o) > outcome_key(bestO[a0]) || bestO[a0].G < -1e29) bestO[a0] = o;
+        };
+        consider(rollout(a0, 0, 0, 0));
+        consider(rollout(a0, 1, 0, 0));
+        for (int js = 0; js <= 18; js += 3)
+            for (int jd : {2, 4, 6, 9, 13}) consider(rollout(a0, 2, js, jd));
+    }
+    std::vector<float> q(A);
+    {
+        auto x = ag::Tensor::from(obs[t0], {1, S}, false);
+        auto qq = net.forward(x).data();
+        for (int a = 0; a < A; ++a) q[a] = qq[a] / REWARD_SCALE;
+    }
+    int ag_ = argmax(q.data(), A);
+    std::printf("\n action    net Q(x10)   search: best return (x reached, %s)   best outcome (return)\n", "alive?");
+    for (int a = 0; a < A; ++a)
+        std::printf(" %-8s %9.1f %s  %9.1f (x=%4d %-5s)             x=%4d %-5s (%.1f)\n", an[a], q[a], a == ag_ ? "*" : " ",
+                    bestG[a].G, bestG[a].maxx, bestG[a].won ? "FLAG" : bestG[a].alive ? "alive" : "end",
+                    bestO[a].maxx, bestO[a].won ? "FLAG" : bestO[a].alive ? "alive" : "end", bestO[a].G);
+
+    int a_ret = 0, a_out = 0;
+    for (int a = 1; a < A; ++a) {
+        if (bestG[a].G > bestG[a_ret].G) a_ret = a;
+        if (outcome_key(bestO[a]) > outcome_key(bestO[a_out])) a_out = a;
+    }
+    // REWARD: the best achievable outcome scores a lower return than some worse play.
+    double best_ret_overall = bestG[a_ret].G;
+    const Out& top = bestO[a_out];
+    bool better_outcome = outcome_key(top) > outcome_key(bestG[a_ret]) + 64;
+    std::printf("\n");
+    if (better_outcome && top.G < best_ret_overall - 1.0) {
+        std::printf("VERDICT: REWARD -- '%s' reaches x=%d %s but returns %.1f, while the return-maximizing play "
+                    "(%s, x=%d %s) returns %.1f. The reward ranks the worse play higher.\n",
+                    an[a_out], top.maxx, top.won ? "(flag)" : top.alive ? "alive" : "", top.G,
+                    an[a_ret], bestG[a_ret].maxx, bestG[a_ret].alive ? "alive" : "ended", best_ret_overall);
+        return 0;
+    }
+    if (bestG[ag_].G >= best_ret_overall - 1.0) {
+        std::printf("VERDICT: NOT HERE -- the net's action '%s' is already (near) the best under the reward at step %d. "
+                    "The mistake is earlier: rerun with a smaller step (e.g. %d).\n", an[ag_], t0, std::max(0, t0 - 4));
+        return 0;
+    }
+    // OBSERVATION: a (near-)identical obs elsewhere was answered with another action.
+    std::vector<std::pair<std::vector<float>, int>> ref;
+    for (int t = 0; t + 10 < P; ++t) ref.push_back({obs[t], act[t]});
+    std::vector<uint8_t> demo;
+    if (demo_path && load_actions(demo_path, demo)) {
+        Episode de = demo_episode(env, demo);
+        for (int t = 0; t < de.T; ++t)
+            ref.push_back({std::vector<float>(de.obs.begin() + (size_t)t * S, de.obs.begin() + (size_t)(t + 1) * S), de.act[t]});
+    }
+    int alias = -1; float alias_d = 1e9f;
+    for (size_t i = 0; i < ref.size(); ++i) {
+        if (ref[i].second == a_ret) continue;
+        float d = 0;
+        for (int k = 0; k < S; ++k) d = std::max(d, std::fabs(ref[i].first[k] - obs[t0][k]));
+        if (d < alias_d) { alias_d = d; alias = (int)i; }
+    }
+    if (alias >= 0) {
+        // Where the nearest state answered differently differs from this one, by
+        // obs group -- if only "where am I" features (mario x/y) separate them, the
+        // net has to memorize positions: effectively an observation gap.
+        const int TN = mario::Env::TILE_N;
+        struct G { const char* name; int lo, hi; } groups[] = {
+            {"mario x/y/vx/air", 0, 4}, {"enemies", 4, 19}, {"terrain grid", 19, 19 + TN}, {"power", 19 + TN, 20 + TN},
+            {"?-blocks", 20 + TN, 20 + 2 * TN}, {"wall probe", 20 + 2 * TN, S}};
+        std::printf("nearest state that took another action ('%s', %s): max |diff| by group:",
+                    an[ref[alias].second], alias < (P > 10 ? P - 10 : 0) ? "greedy run" : "demo");
+        for (auto& g : groups) {
+            float d = 0;
+            for (int k = g.lo; k < g.hi; ++k) d = std::max(d, std::fabs(ref[alias].first[k] - obs[t0][k]));
+            std::printf("  %s %.2f", g.name, d);
+        }
+        std::printf("\n");
+    }
+    if (alias >= 0 && alias_d < 0.05f) {
+        std::printf("VERDICT: OBSERVATION -- best action here is '%s', but reference state #%d (%s) has an obs within "
+                    "%.3f (max abs diff) and took '%s'. The net cannot separate them; add the missing feature.\n",
+                    an[a_ret], alias, alias < (int)(P > 10 ? P - 10 : 0) ? "greedy run" : "demo", alias_d,
+                    an[ref[alias].second]);
+        return 0;
+    }
+    std::printf("VERDICT: LEARNING/EXPLORATION -- the reward ranks '%s' best (%.1f vs %.1f for the net's '%s') and the obs "
+                "is distinct (nearest conflicting state %.3f away), but the net's Q prefers '%s'. Needs more training "
+                "or more experience from here (curriculum / actors).\n",
+                an[a_ret], best_ret_overall, bestG[ag_].G, an[ag_], alias_d, an[ag_]);
+    return 0;
+}
+
 static int evalnet(const char* rom, const char* weights) {
     rl::QNet net(mario::Env::STATE_DIM, mario::N_ACTIONS, HID);
     if (!net.load(weights) && !net.load_expand(weights)) { std::printf("cannot load %s\n", weights); return 1; }
@@ -792,6 +974,8 @@ int main(int argc, char** argv) {
     const char* rom_default = "Super Mario Bros (JU) (PRG 0).nes";
     if (mode == "bench") return bench(arg(2, rom_default));
     if (mode == "cleandemo" && argc >= 5) return cleandemo(argv[2], argv[3], argv[4]);
+    if (mode == "diagnose" && argc >= 4)
+        return diagnose(argv[2], argv[3], std::atoi(arg(4, "-1")), arg(5, "warmstarts/demo_robust_1-1_3act.bin"));
     if (mode == "wallprobe" && argc >= 4) return wallprobe(argv[2], argv[3]);
     if (mode == "searchdemo" && argc >= 4) return searchdemo(argv[2], argv[3]);
     if (mode == "eval" && argc >= 4) return evalnet(argv[2], argv[3]);

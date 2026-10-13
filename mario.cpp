@@ -1,5 +1,6 @@
 #include "mario.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
@@ -342,11 +343,15 @@ void Env::build_obs() {
     // boldly when big (a hit costs power, not a life) and value keeping it.
     obs_[19 + TILE_N] = std::min(1.f, power_state() / 2.f);
     // Wall probe at Mario's own height (see mario.h). Mario's level x is his
-    // left edge and he is 16px wide; y is the top of his (small) sprite.
+    // left edge and he is 16px wide. SMB keeps y 16px ABOVE small Mario (his body
+    // is y+16..y+32), so rows are body (y+24), one tile up, two tiles up.
+    // MARIO_NO_WALL=1 leaves them at 0 (the pre-probe observation) for A/B checks
+    // such as `mario_gpu diagnose`.
+    static const bool no_wall = [] { const char* e = std::getenv("MARIO_NO_WALL"); return e && *e == '1'; }();
     int wbase = 20 + 2 * TILE_N;
-    for (int c = 0; c < WALL_COLS; ++c)
+    for (int c = 0; c < WALL_COLS && !no_wall; ++c)
         for (int r = 0; r < WALL_ROWS; ++r)
-            obs_[wbase + c * WALL_ROWS + r] = tile_at(lx + 20 + c * 16, py + 8 - r * 16) != 0 ? 1.f : 0.f;
+            obs_[wbase + c * WALL_ROWS + r] = tile_at(lx + 20 + c * 16, py + 24 - r * 16) != 0 ? 1.f : 0.f;
 }
 
 }  // namespace mario
