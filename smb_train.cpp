@@ -4,7 +4,8 @@
 //   smb_train train ROM --levels 1-1,1-2 [--eval 2-1] [--demos demos] [--actors 16]
 //                       [--minutes 60] [--warm net.bin]
 //   smb_train eval ROM net.bin W-S[,W-S...]          greedy run per stage
-//   smb_train record ROM net.bin W-S out.bin         MRUN video (tools/make_gif.sh)
+//   smb_train record ROM net.bin W-S out.bin         MRUN video of the greedy run (tools/make_gif.sh)
+//   smb_train recorddemo ROM W-S demo.bin out.bin    MRUN video of a demo (action file)
 //   smb_train actor ...                               (internal, spawned by train)
 //
 // Same Ape-X layout and DQfD loss as mario_gpu (see there and apex_common.hpp);
@@ -317,10 +318,18 @@ static int evalnet(const char* rom, const char* weights, const std::vector<Level
     return 0;
 }
 
-static int record(const char* rom, const char* weights, const Level& lv, const char* out_path) {
-    auto netp = model_for(weights);
-    QModel& net = *netp;
-    if (!net.load(weights)) { std::printf("cannot load %s\n", weights); return 1; }
+// MRUN video of one stage, driven by a net (greedy) or, with `is_demo`, by a
+// saved action sequence (a searchdemo result). 120 hands-off steps follow a
+// win so the flag / castle sequence is in the clip.
+static int record(const char* rom, const char* src, const Level& lv, const char* out_path, bool is_demo) {
+    std::unique_ptr<QModel> netp;
+    std::vector<uint8_t> demo;
+    if (is_demo) {
+        if (!load_actions(src, demo)) { std::printf("cannot load demo %s\n", src); return 1; }
+    } else {
+        netp = model_for(src);
+        if (!netp->load(src)) { std::printf("cannot load %s\n", src); return 1; }
+    }
     Env env;
     if (!env.init(rom)) return 1;
     env.set_level(lv);
@@ -337,11 +346,17 @@ static int record(const char* rom, const char* weights, const Level& lv, const c
         std::fwrite(rgb.data(), 1, rgb.size(), f); ++nframes;
     };
     bool done = false;
-    while (!done) { env.step(greedy_action(net, s), done); s = env.observation(); put(); }
+    size_t t = 0;
+    while (!done) {
+        int a = is_demo ? (t < demo.size() ? demo[t] : smbx::A_WAIT) : greedy_action(*netp, s);
+        ++t;
+        env.step(a, done); s = env.observation(); put();
+    }
     if (env.won())
         for (int t = 0; t < 120; ++t) { nes::set_buttons(0, 0); for (int k = 0; k < Env::FRAME_SKIP; ++k) nes::step_frame(); put(); }
     std::fseek(f, 4, SEEK_SET); std::fwrite(&nframes, 4, 1, f); std::fclose(f);
-    std::printf("recorded %u frames (%s progress=%d won=%d) -> %s\n", nframes, lv.name().c_str(), env.progress(), (int)env.won(), out_path);
+    std::printf("recorded %u frames (%s progress=%d won=%d power=%d) -> %s\n", nframes, lv.name().c_str(),
+                env.progress(), (int)env.won(), env.power(), out_path);
     return 0;
 }
 
@@ -610,10 +625,15 @@ int main(int argc, char** argv) {
         return searchdemo(argv[2], lv, argv[4]);
     }
     if (mode == "eval" && argc >= 5) return evalnet(argv[2], argv[3], parse_levels(argv[4]));
+    if (mode == "recorddemo" && argc >= 6) {
+        Level lv;
+        if (!smbx::parse_level(argv[3], lv)) return 1;
+        return record(argv[2], argv[4], lv, argv[5], true);
+    }
     if (mode == "record" && argc >= 6) {
         Level lv;
         if (!smbx::parse_level(argv[4], lv)) return 1;
-        return record(argv[2], argv[3], lv, argv[5]);
+        return record(argv[2], argv[3], lv, argv[5], false);
     }
     if (mode == "parity") return parity_conv();
     if (mode == "actor" && argc >= 7) return actor(argv[2], std::atoi(argv[3]), std::atoi(argv[4]), argv[5], argv[6]);
