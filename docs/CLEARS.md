@@ -14,26 +14,31 @@
 | 1-1 | ✅ クリア | ✅ クリア（途中でキノコを取る） |
 | 1-2 | ✅ クリア | ✅ クリア |
 | 1-3 | ✗（x≈430 まで） | 探索中（動くリフトとパタパタの区間で詰まっている） |
-| 1-4 | ✗（x≈1330 のファイアバーまで） | ✅ クリア |
+| 1-4 | ✅ クリア | ✅ クリア |
 
 ---
 
-## 🧠 学習ネット：1 つのネットで 1-1 と 1-2 をクリア
+## 🧠 学習ネット：1 つのネットで 1-1・1-2・1-4 をクリア
 
-1-1・1-2・1-4 の 3 面で同時に学習した 1 つのネット（MLP、全面共通の盤面観測）。同じ重みで 1-1 と 1-2 の両方を、スタートから旗まで greedy でクリアします。
-ネット: [`warmstarts/smb_mlp_clear_1-1_1-2.bin`](../warmstarts/)（RTX 3090、アクター 16 本、学習開始から約 19 分の時点）。
+1-1・1-2・1-4 の 3 面で同時に学習した 1 つのネット（MLP、全面共通の盤面観測）。同じ重みで 3 面とも、スタートからゴールまで greedy でクリアします。
+ネット: [`warmstarts/smb_mlp_clear_1-1_1-2_1-4.bin`](../warmstarts/)（RTX 3090、アクター 16 本、学習開始から約 32 分の時点）。
+学習に使っていない 1-3（x≈391）と 2-1（x≈832）はまだ序盤で止まります。また評価のたびにクリアできる面の数が 0〜3 で揺れるので、3 面ともクリアできた時点の重みを保存しています。
 
-### 1-1（420 手）
+### 1-1（370 手）
 
 ![learned net clears 1-1](smb_net_1-1.gif)
 
-### 1-2（510 手。地下を抜け、出口の土管から地上へ出て旗をつかむ）
+### 1-2（494 手。地下を抜け、出口の土管から地上へ出て旗をつかむ）
 
 ![learned net clears 1-2](smb_net_1-2.gif)
 
+### 1-4（281 手、城。ファイアバーをくぐり、クッパを越えて斧へ）
+
+![learned net clears 1-4](smb_net_1-4.gif)
+
 ```sh
-./build/smb_train eval   "$ROM" warmstarts/smb_mlp_clear_1-1_1-2.bin 1-1,1-2
-./build/smb_train record "$ROM" warmstarts/smb_mlp_clear_1-1_1-2.bin 1-2 run.bin   # → tools/make_gif.sh run.bin out.gif
+./build/smb_train eval   "$ROM" warmstarts/smb_mlp_clear_1-1_1-2_1-4.bin 1-1,1-2,1-4
+./build/smb_train record "$ROM" warmstarts/smb_mlp_clear_1-1_1-2_1-4.bin 1-4 run.bin   # → tools/make_gif.sh run.bin out.gif
 ```
 
 ### 参考：1-1 専用ネット（前回）

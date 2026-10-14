@@ -19,7 +19,7 @@ autograd は [mini-yolov5-cpp](https://github.com/yomei-o/mini-yolov5-cpp) の�
 
 ## 🎬 各面のクリア動画一覧
 
-**[docs/CLEARS.md](docs/CLEARS.md)**：1 つの学習ネットで 1-1 と 1-2 をクリアする動画と、1-1（キノコあり）・1-2・1-4（城）の探索による手本走行。
+**[docs/CLEARS.md](docs/CLEARS.md)**：1 つの学習ネットで 1-1・1-2・1-4 をクリアする動画と、1-1（キノコあり）・1-2・1-4（城）の探索による手本走行。
 全面共通の環境 `smb_env`（どの面でも同じ盤面観測・同じ報酬）と、複数の面をまとめて学習する `smb_train` で作ったもの。
 
 ## ⚡ GPU 学習（DQfD）：greedy 方策がスタートから 1-1 を自力クリア
