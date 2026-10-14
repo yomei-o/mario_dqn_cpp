@@ -181,8 +181,8 @@ struct NStepReplay {
 
 
 // Greedy run from the level start. Returns max x; fills the action sequence.
-template <class Env>
-int greedy_run(rl::QNet& net, Env& env, bool& won, std::vector<uint8_t>* acts = nullptr) {
+template <class Net, class Env>
+int greedy_run(Net& net, Env& env, bool& won, std::vector<uint8_t>* acts = nullptr) {
     std::vector<float> s = env.reset();
     bool done = false; int mx = 0;
     if (acts) acts->clear();
@@ -230,7 +230,8 @@ Episode demo_episode(Env& env, const std::vector<uint8_t>& acts) {
     return e;
 }
 
-inline void publish(rl::QNet& net, int ver, const std::string& dir) {
+template <class Net>
+void publish(Net& net, int ver, const std::string& dir) {
     std::string tmp = dir + "/weights.tmp", dst = dir + "/weights.bin";
     net.save(tmp);
     for (int tries = 0; tries < 50; ++tries) {   // Windows: an actor may hold the file open for a moment

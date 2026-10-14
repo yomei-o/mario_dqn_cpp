@@ -17,6 +17,7 @@
 #include "smb_env.h"
 #include "mario_shared.h"
 #include "apex_common.hpp"
+#include "conv_net.h"
 #include <map>
 #include <deque>
 #include <sstream>
@@ -26,17 +27,64 @@ using namespace apex;
 using smbx::Env;
 using smbx::Level;
 
-// Hidden width: SMB_HID for a new net (default 512); a saved net's width is
-// read back from its file (first tensor is W1 = STATE_DIM x H).
+// Q-model: the MLP (rl::QNet) or the conv net (rl::ConvQ, conv_net.h). A new
+// net is conv when SMB_NET=conv; a saved net's kind and width are read back
+// from its file. Hidden width: SMB_HID (default 512).
+struct QModel {
+    virtual ~QModel() {}
+    virtual bool conv() const = 0;
+    virtual int hidden() const = 0;
+    virtual int act(const std::vector<float>& s) = 0;
+    virtual bool load(const std::string& path) = 0;
+    virtual bool save(const std::string& path) = 0;
+    virtual void get(std::vector<std::vector<float>>& p) = 0;
+    virtual void set(const std::vector<std::vector<float>>& p) = 0;
+};
+struct MlpModel : QModel {
+    rl::QNet net;
+    MlpModel(int H) : net(Env::STATE_DIM, smbx::N_ACTIONS, H) {}
+    bool conv() const override { return false; }
+    int hidden() const override { return net.hdim; }
+    int act(const std::vector<float>& s) override { return greedy_action(net, s); }
+    bool load(const std::string& p) override { return net.load(p) || net.load_expand(p); }
+    bool save(const std::string& p) override { return net.save(p); }
+    void get(std::vector<std::vector<float>>& p) override { qnet_get(net, p); }
+    void set(const std::vector<std::vector<float>>& p) override { qnet_set(net, p); }
+};
+struct ConvModel : QModel {
+    rl::ConvQ net;
+    ConvModel(int H) : net(smbx::N_ACTIONS, H) { net.init_random(1); }
+    bool conv() const override { return true; }
+    int hidden() const override { return net.arch.H; }
+    int act(const std::vector<float>& s) override {
+        float q[16];
+        net.forward(s.data(), 1, q);
+        return argmax(q, smbx::N_ACTIONS);
+    }
+    bool load(const std::string& p) override { return net.load(p); }
+    bool save(const std::string& p) override { return net.save(p); }
+    void get(std::vector<std::vector<float>>& p) override { net.get_params(p); }
+    void set(const std::vector<std::vector<float>>& p) override { net.set_params(p); }
+};
+inline int greedy_action(QModel& m, const std::vector<float>& s) { return m.act(s); }
+
+static const char* RUN_DIR = "smb_run";
 static int hid_default() { const char* e = std::getenv("SMB_HID"); return e ? std::atoi(e) : 512; }
-static int hid_of(const char* path) {
+static std::unique_ptr<QModel> new_model(bool conv, int H) {
+    if (conv) return std::unique_ptr<QModel>(new ConvModel(H));
+    return std::unique_ptr<QModel>(new MlpModel(H));
+}
+// Model matching a weights file (kind + width), or a fresh default if unreadable.
+static std::unique_ptr<QModel> model_for(const char* path) {
+    int H = 0;
+    if (rl::is_conv_file(path, &H) && H > 0) return new_model(true, H);
     FILE* f = std::fopen(path, "rb");
     int n = 0;
     if (f) { if (std::fread(&n, sizeof(int), 1, f) != 1) n = 0; std::fclose(f); }
-    if (n > 0 && n % Env::STATE_DIM == 0) return n / Env::STATE_DIM;
-    return hid_default();
+    if (n > 0 && n % Env::STATE_DIM == 0) return new_model(false, n / Env::STATE_DIM);
+    const char* k = std::getenv("SMB_NET");
+    return new_model(k && std::strcmp(k, "conv") == 0, hid_default());
 }
-static const char* RUN_DIR = "smb_run";
 
 static std::vector<Level> parse_levels(const std::string& csv) {
     std::vector<Level> out;
@@ -249,11 +297,11 @@ static int searchdemo(const char* rom, const Level& lv, const char* out) {
 }
 
 // ---------------------------------------------------------------- eval / record
-static bool load_net(rl::QNet& net, const char* path) { return net.load(path) || net.load_expand(path); }
 
 static int evalnet(const char* rom, const char* weights, const std::vector<Level>& levels) {
-    rl::QNet net(Env::STATE_DIM, smbx::N_ACTIONS, hid_of(weights));
-    if (!load_net(net, weights)) { std::printf("cannot load %s\n", weights); return 1; }
+    auto netp = model_for(weights);
+    QModel& net = *netp;
+    if (!net.load(weights)) { std::printf("cannot load %s\n", weights); return 1; }
     Env env;
     if (!env.init(rom)) return 1;
     int cleared = 0;
@@ -270,8 +318,9 @@ static int evalnet(const char* rom, const char* weights, const std::vector<Level
 }
 
 static int record(const char* rom, const char* weights, const Level& lv, const char* out_path) {
-    rl::QNet net(Env::STATE_DIM, smbx::N_ACTIONS, hid_of(weights));
-    if (!load_net(net, weights)) { std::printf("cannot load %s\n", weights); return 1; }
+    auto netp = model_for(weights);
+    QModel& net = *netp;
+    if (!net.load(weights)) { std::printf("cannot load %s\n", weights); return 1; }
     Env env;
     if (!env.init(rom)) return 1;
     env.set_level(lv);
@@ -296,6 +345,51 @@ static int record(const char* rom, const char* weights, const Level& lv, const c
     return 0;
 }
 
+// ---------------------------------------------------------------- parity
+// CPU and CUDA conv learners from the same weights on the same batches must agree.
+static int parity_conv() {
+    const int A = smbx::N_ACTIONS, H = 128, B = 32;
+    auto gpu = rl::make_conv_cuda_learner(A, H);
+    if (!gpu) { std::printf("no CUDA conv learner in this build / no GPU\n"); return 1; }
+    auto cpu = rl::make_conv_cpu_learner(A, H);
+    rl::ConvQ init(A, H);
+    init.init_random(7);
+    std::vector<std::vector<float>> p;
+    init.get_params(p);
+    cpu->set_params(p); gpu->set_params(p);
+    const int S = rl::ConvArch::IN;
+    rl::Batch b; b.resize(B, S);
+    ag::seed(3);
+    float worst = 0.f;
+    for (int it = 0; it < 10; ++it) {
+        for (auto& v : b.s) v = ag::randf() < 0.15f ? 1.f : 0.f;
+        for (auto& v : b.ns) v = ag::randf() < 0.15f ? 1.f : 0.f;
+        for (int r = 0; r < B; ++r) {
+            b.a[r] = (int)(ag::randf() * A) % A; b.ret[r] = ag::randf() * 4 - 2;
+            b.gn[r] = ag::randf() < 0.1f ? 0.f : 0.95f; b.demo[r] = ag::randf() < 0.3f;
+        }
+        float lc = cpu->train(b), lg = gpu->train(b);
+        std::vector<std::vector<float>> pc, pg;
+        cpu->get_params(pc); gpu->get_params(pg);
+        float md = 0.f;
+        for (size_t i = 0; i < pc.size(); ++i)
+            for (size_t j = 0; j < pc[i].size(); ++j) md = std::max(md, std::fabs(pc[i][j] - pg[i][j]));
+        worst = std::max(worst, md);
+        std::printf("step %d  loss cpu %.6f gpu %.6f  max|dW| %.2e\n", it, lc, lg, md);
+    }
+    std::vector<float> qc(B * A), qg(B * A), qi(B * A);
+    cpu->forward(b.s.data(), B, qc.data()); gpu->forward(b.s.data(), B, qg.data());
+    rl::ConvQ inf(A, H);
+    std::vector<std::vector<float>> pc; cpu->get_params(pc); inf.set_params(pc);
+    inf.forward(b.s.data(), B, qi.data());
+    float mq = 0.f, mi = 0.f;
+    for (int i = 0; i < B * A; ++i) { mq = std::max(mq, std::fabs(qc[i] - qg[i])); mi = std::max(mi, std::fabs(qc[i] - qi[i])); }
+    std::printf("forward max|dQ| cpu-gpu %.2e  cpu-inference %.2e\n", mq, mi);
+    bool ok = worst < 1e-3f && mq < 1e-3f && mi < 1e-5f;
+    std::printf("conv parity %s\n", ok ? "OK" : "MISMATCH");
+    return ok ? 0 : 1;
+}
+
 // ---------------------------------------------------------------- actor
 static int actor(const char* rom, int id, int n_actors, const std::string& levels_csv, const std::string& demos) {
     std::string dir = RUN_DIR;
@@ -316,7 +410,8 @@ static int actor(const char* rom, int id, int n_actors, const std::string& level
     std::fflush(stdout);
     std::string wpath = dir + "/weights.bin", vpath = dir + "/weights.ver";
     while (!fs::exists(wpath)) std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    rl::QNet net(S, A, hid_of(wpath.c_str()));
+    auto netp = model_for(wpath.c_str());
+    QModel& net = *netp;
     int have_ver = -1, seq = 0;
     auto t_last = Clock::now();
     for (long ep = id;; ++ep) {
@@ -354,7 +449,10 @@ static int actor(const char* rom, int id, int n_actors, const std::string& level
 static int train(const char* exe, const char* rom, const std::vector<Level>& levels, const std::vector<Level>& held,
                  const std::string& levels_csv, const std::string& demos, int n_actors, double minutes, const char* warm) {
     const int S = Env::STATE_DIM, A = smbx::N_ACTIONS;
-    const int HID = warm && *warm ? hid_of(warm) : hid_default();
+    const char* kind = std::getenv("SMB_NET");
+    auto netp = warm && *warm ? model_for(warm) : new_model(kind && std::strcmp(kind, "conv") == 0, hid_default());
+    QModel& net = *netp;
+    const int HID = net.hidden();
     const int B = 256, target_sync = 2000, publish_every = 200, pretrain_steps = 30000;
     const float demo_frac = 0.25f;
     double eval_period = 60.0;
@@ -369,16 +467,22 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
 
     std::unique_ptr<rl::Learner> L;
     const char* want = std::getenv("MARIO_LEARNER");
-    if (!(want && std::strcmp(want, "cpu") == 0)) L = rl::make_cuda_learner(S, A, HID);
-    if (!L) L = rl::make_cpu_learner(S, A, HID);
+    bool use_gpu = !(want && std::strcmp(want, "cpu") == 0);
+    if (net.conv()) {
+        if (use_gpu) L = rl::make_conv_cuda_learner(A, HID);
+        if (!L) L = rl::make_conv_cpu_learner(A, HID);
+    } else {
+        if (use_gpu) L = rl::make_cuda_learner(S, A, HID);
+        if (!L) L = rl::make_cpu_learner(S, A, HID);
+    }
     L->lr = 1e-4f;
     if (const char* e = std::getenv("MARIO_LR")) L->lr = (float)std::atof(e);
 
     ag::seed(1);
-    rl::QNet net(S, A, HID);
-    bool warmed = warm && *warm && load_net(net, warm);
+    if (!net.conv()) ag::seed(1);
+    bool warmed = warm && *warm && net.load(warm);
     std::vector<std::vector<float>> P;
-    qnet_get(net, P);
+    net.get(P);
     L->set_params(P);
 
     Env env;
@@ -414,7 +518,7 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
     std::map<std::string, int> best_p;
     int best_cleared = -1;
     auto evaluate = [&](const char* tag) {
-        L->get_params(P); qnet_set(net, P);
+        L->get_params(P); net.set(P);
         int cl = 0, cl_held = 0;
         std::string line;
         for (int pass = 0; pass < 2; ++pass)
@@ -450,7 +554,7 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
     L->sync_target();
     evaluate("start");
 
-    L->get_params(P); qnet_set(net, P);
+    L->get_params(P); net.set(P);
     int ver = 0;
     publish(net, ver++, dir);
     for (int i = 0; i < n_actors; ++i)
@@ -475,7 +579,7 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
             loss_acc += L->train(batch); ++loss_n;
             ++updates; ++did;
             if (updates % target_sync == 0) L->sync_target();
-            if (updates % publish_every == 0) { L->get_params(P); qnet_set(net, P); publish(net, ver++, dir); }
+            if (updates % publish_every == 0) { L->get_params(P); net.set(P); publish(net, ver++, dir); }
         }
         if (!did) std::this_thread::sleep_for(std::chrono::milliseconds(50));
         if (secs_since(t_log) > 30) {
@@ -511,6 +615,7 @@ int main(int argc, char** argv) {
         if (!smbx::parse_level(argv[4], lv)) return 1;
         return record(argv[2], argv[3], lv, argv[5]);
     }
+    if (mode == "parity") return parity_conv();
     if (mode == "actor" && argc >= 7) return actor(argv[2], std::atoi(argv[3]), std::atoi(argv[4]), argv[5], argv[6]);
     if (mode == "train" && argc >= 3) {
         std::string levels = "1-1", held, demos = "demos", warm;

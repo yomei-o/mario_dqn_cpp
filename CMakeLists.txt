@@ -154,7 +154,7 @@ else()
 endif()
 
 # All-stage trainer (smb_env + the shared Ape-X plumbing); CUDA learner when available.
-add_executable(smb_train smb_train.cpp smb_env.cpp nes.cpp autograd.cpp dqn_learner_cpu.cpp ${LAINES_SRC})
+add_executable(smb_train smb_train.cpp smb_env.cpp conv_net.cpp nes.cpp autograd.cpp dqn_learner_cpu.cpp ${LAINES_SRC})
 target_include_directories(smb_train PRIVATE . third_party/laines/include)
 if (CMAKE_CUDA_COMPILER)
     target_sources(smb_train PRIVATE dqn_learner_cuda.cu)
