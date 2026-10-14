@@ -231,8 +231,8 @@ Episode demo_episode(Env& env, const std::vector<uint8_t>& acts) {
 }
 
 template <class Net>
-void publish(Net& net, int ver, const std::string& dir) {
-    std::string tmp = dir + "/weights.tmp", dst = dir + "/weights.bin";
+void publish(Net& net, int ver, const std::string& dir, const std::string& name = "weights") {
+    std::string tmp = dir + "/" + name + ".tmp", dst = dir + "/" + name + ".bin";
     net.save(tmp);
     for (int tries = 0; tries < 50; ++tries) {   // Windows: an actor may hold the file open for a moment
         std::error_code ec;
@@ -240,7 +240,7 @@ void publish(Net& net, int ver, const std::string& dir) {
         if (!ec) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (FILE* f = std::fopen((dir + "/weights.ver").c_str(), "w")) { std::fprintf(f, "%d\n", ver); std::fclose(f); }
+    if (FILE* f = std::fopen((dir + "/" + name + ".ver").c_str(), "w")) { std::fprintf(f, "%d\n", ver); std::fclose(f); }
 }
 
 }  // namespace apex

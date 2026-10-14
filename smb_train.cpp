@@ -129,7 +129,9 @@ static int searchdemo(const char* rom, const Level& lv, const char* out) {
     auto rep = [](int a, int n) { return std::vector<uint8_t>(n, (uint8_t)a); };
     auto cat = [](std::vector<uint8_t> a, const std::vector<uint8_t>& b) { a.insert(a.end(), b.begin(), b.end()); return a; };
 
+    const double limit_s = 60.0 * (std::getenv("SEARCH_MINUTES") ? std::atof(std::getenv("SEARCH_MINUTES")) : 60.0);
     for (int iter = 0; iter < 3000; ++iter) {
+        if (secs_since(t0) > limit_s) { std::printf("search gave up on %s (time limit)\n", lv.name().c_str()); return 1; }
         size_t L = C.size();
         env.restore(S[L]);
         int pw0 = env.power();
@@ -460,9 +462,64 @@ static int actor(const char* rom, int id, int n_actors, const std::string& level
     return 0;
 }
 
+// ---------------------------------------------------------------- evaluator
+// Runs beside the learner so evaluation never stalls training: whenever the
+// learner publishes a new EMA (Polyak-averaged) net, play the greedy run on
+// every training and held-out stage, append the result to <run>/eval.log and
+// keep the best net (most training stages cleared, then most total progress)
+// as smb_best.bin. The EMA net is evaluated rather than the raw online net
+// because the online net's greedy route flips from one update to the next.
+static int evaluator(const char* rom, const std::string& levels_csv, const std::string& held_csv) {
+    std::string dir = RUN_DIR;
+    std::vector<Level> levels = parse_levels(levels_csv), held = parse_levels(held_csv);
+    Env env;
+    if (!env.init(rom)) return 1;
+    std::string wpath = dir + "/ema.bin", vpath = dir + "/ema.ver";
+    int have = -1;
+    double best = -1;
+    auto t0 = Clock::now(), t_last = Clock::now();
+    for (;;) {
+        if (fs::exists(dir + "/stop") && have >= 0) break;
+        int ver = -1;
+        if (FILE* f = std::fopen(vpath.c_str(), "r")) { if (std::fscanf(f, "%d", &ver) != 1) ver = -1; std::fclose(f); }
+        if (ver == have || ver < 0) {
+            if (secs_since(t_last) > 300) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+        auto netp = model_for(wpath.c_str());
+        if (!netp->load(wpath)) { std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
+        have = ver; t_last = Clock::now();
+        int cl = 0, cl_held = 0;
+        double total = 0;
+        std::string line;
+        for (int pass = 0; pass < 2; ++pass)
+            for (auto& lv : pass ? held : levels) {
+                env.set_level(lv);
+                bool won = false;
+                int p = greedy_run(*netp, env, won, nullptr);
+                if (pass) cl_held += won; else { cl += won; total += won ? 5000 : p; }
+                char buf[96];
+                std::snprintf(buf, sizeof buf, " %s%s:%d%s", pass ? "*" : "", lv.name().c_str(), p, won ? "W" : "");
+                line += buf;
+            }
+        double score = cl * 1e6 + total;
+        bool is_best = score > best;
+        if (is_best) { best = score; netp->save("smb_best.bin"); }
+        netp->save("smb_latest.bin");
+        if (FILE* f = std::fopen((dir + "/eval.log").c_str(), "a")) {
+            std::fprintf(f, "[%7.1fs] ema v%-4d cleared %d/%zu held-out %d/%zu |%s%s\n", secs_since(t0), ver, cl, levels.size(),
+                         cl_held, held.size(), line.c_str(), is_best ? "  <- best" : "");
+            std::fclose(f);
+        }
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------- learner
 static int train(const char* exe, const char* rom, const std::vector<Level>& levels, const std::vector<Level>& held,
-                 const std::string& levels_csv, const std::string& demos, int n_actors, double minutes, const char* warm) {
+                 const std::string& levels_csv, const std::string& held_csv, const std::string& demos, int n_actors,
+                 double minutes, const char* warm) {
     const int S = Env::STATE_DIM, A = smbx::N_ACTIONS;
     const char* kind = std::getenv("SMB_NET");
     auto netp = warm && *warm ? model_for(warm) : new_model(kind && std::strcmp(kind, "conv") == 0, hid_default());
@@ -470,10 +527,8 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
     const int HID = net.hidden();
     const int B = 256, target_sync = 2000, publish_every = 200, pretrain_steps = 30000;
     const float demo_frac = 0.25f;
-    double eval_period = 60.0;
     float ratio = 16.f;
     if (const char* e = std::getenv("MARIO_RATIO")) ratio = (float)std::atof(e);
-    if (const char* e = std::getenv("MARIO_EVAL_SEC")) eval_period = std::atof(e);
 
     std::string dir = RUN_DIR;
     fs::create_directories(dir + "/ep");
@@ -529,32 +584,7 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
         }
     };
 
-    auto t0 = Clock::now();
-    std::map<std::string, int> best_p;
-    int best_cleared = -1;
-    auto evaluate = [&](const char* tag) {
-        L->get_params(P); net.set(P);
-        int cl = 0, cl_held = 0;
-        std::string line;
-        for (int pass = 0; pass < 2; ++pass)
-            for (auto& lv : pass ? held : levels) {
-                env.set_level(lv);
-                bool won = false;
-                int p = greedy_run(net, env, won, nullptr);
-                (pass ? cl_held : cl) += won;
-                best_p[lv.name()] = std::max(best_p[lv.name()], p);
-                char buf[96];
-                std::snprintf(buf, sizeof buf, " %s%s:%d%s", pass ? "*" : "", lv.name().c_str(), p, won ? "W" : (env.power() ? "+" : ""));
-                line += buf;
-            }
-        if (cl > best_cleared) { best_cleared = cl; net.save("smb_best.bin"); }
-        net.save("smb_latest.bin");
-        std::printf("[%7.1fs] %-8s cleared %d/%zu held-out %d/%zu |%s\n", secs_since(t0), tag, cl, levels.size(),
-                    cl_held, held.size(), line.c_str());
-        std::fflush(stdout);
-        return cl == (int)levels.size();
-    };
-
+    auto t0 = Clock::now();   // reset after the demo pre-training: --minutes is RL time
     if (!warmed && demo_buf.size) {
         const float lr_rl = L->lr;
         L->lr = 5e-4f;
@@ -567,13 +597,28 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
         L->lr = lr_rl;
     }
     L->sync_target();
-    evaluate("start");
+    t0 = Clock::now();
 
-    L->get_params(P); net.set(P);
+    // EMA of the online weights, refreshed at every publish (decay 0.8 per
+    // publish = a time constant of ~1000 updates); the evaluator plays it.
+    const float ema_decay = 0.8f;
+    std::vector<std::vector<float>> E;
+    auto emap = new_model(net.conv(), HID);
+    L->get_params(P); net.set(P); E = P;
     int ver = 0;
-    publish(net, ver++, dir);
+    auto publish_all = [&]() {
+        for (size_t i = 0; i < E.size(); ++i)
+            for (size_t j = 0; j < E[i].size(); ++j) E[i][j] = ema_decay * E[i][j] + (1 - ema_decay) * P[i][j];
+        emap->set(E);
+        publish(*emap, ver, dir, "ema");
+        publish(net, ver++, dir);
+    };
+    fs::remove(dir + "/eval.log");
+    publish_all();
     for (int i = 0; i < n_actors; ++i)
         spawn_self(exe, {"actor", rom, std::to_string(i), std::to_string(n_actors), levels_csv, demos});
+    spawn_self(exe, {"evaluator", rom, levels_csv, held_csv});
+    long eval_off = 0;
 
     long updates = 0, steps_in = 0, eps_in = 0;
     int actor_wins = 0;
@@ -594,7 +639,7 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
             loss_acc += L->train(batch); ++loss_n;
             ++updates; ++did;
             if (updates % target_sync == 0) L->sync_target();
-            if (updates % publish_every == 0) { L->get_params(P); net.set(P); publish(net, ver++, dir); }
+            if (updates % publish_every == 0) { L->get_params(P); net.set(P); publish_all(); }
         }
         if (!did) std::this_thread::sleep_for(std::chrono::milliseconds(50));
         if (secs_since(t_log) > 30) {
@@ -604,16 +649,21 @@ static int train(const char* exe, const char* rom, const std::vector<Level>& lev
             std::fflush(stdout);
             loss_acc = 0; loss_n = 0; t_log = Clock::now();
         }
-        if (secs_since(t_eval) > eval_period && updates > 0) {
-            bool all = evaluate("eval");
+        if (secs_since(t_eval) > 5) {   // relay the evaluator's new lines
             t_eval = Clock::now();
-            if (all && std::getenv("SMB_STOP_ON_ALL")) break;
+            if (FILE* f = std::fopen((dir + "/eval.log").c_str(), "r")) {
+                std::fseek(f, eval_off, SEEK_SET);
+                char buf[1024];
+                while (std::fgets(buf, sizeof buf, f)) std::fputs(buf, stdout);
+                eval_off = std::ftell(f);
+                std::fclose(f);
+                std::fflush(stdout);
+            }
         }
     }
     if (FILE* f = std::fopen((dir + "/stop").c_str(), "w")) std::fclose(f);
-    evaluate("final");
-    std::printf("done (%.1f min, %ld env steps, %ld updates); best net smb_best.bin, last smb_latest.bin\n",
-                secs_since(t0) / 60, steps_in, updates);
+    std::printf("done (%.1f min, %ld env steps, %ld updates); best EMA net smb_best.bin (see %s/eval.log)\n",
+                secs_since(t0) / 60, steps_in, updates, dir.c_str());
     return 0;
 }
 
@@ -636,6 +686,7 @@ int main(int argc, char** argv) {
         return record(argv[2], argv[3], lv, argv[5], false);
     }
     if (mode == "parity") return parity_conv();
+    if (mode == "evaluator" && argc >= 5) return evaluator(argv[2], argv[3], argv[4]);
     if (mode == "actor" && argc >= 7) return actor(argv[2], std::atoi(argv[3]), std::atoi(argv[4]), argv[5], argv[6]);
     if (mode == "train" && argc >= 3) {
         std::string levels = "1-1", held, demos = "demos", warm;
@@ -646,7 +697,7 @@ int main(int argc, char** argv) {
             else if (k == "--actors") actors = std::atoi(v.c_str()); else if (k == "--minutes") minutes = std::atof(v.c_str());
             else if (k == "--warm") warm = v; else std::printf("unknown option %s\n", k.c_str());
         }
-        return train(argv[0], argv[2], parse_levels(levels), parse_levels(held), levels, demos, actors, minutes, warm.c_str());
+        return train(argv[0], argv[2], parse_levels(levels), parse_levels(held), levels, held, demos, actors, minutes, warm.c_str());
     }
     std::printf("usage: smb_train searchdemo|train|eval|record ... (see header)\n");
     return 1;
