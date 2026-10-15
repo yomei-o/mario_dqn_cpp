@@ -431,6 +431,7 @@ static int actor(const char* rom, int id, int n_actors, const std::string& level
     QModel& net = *netp;
     int have_ver = -1, seq = 0;
     auto t_last = Clock::now();
+    std::vector<float> weight(levels.size(), 1.f);
     for (long ep = id;; ++ep) {
         if (fs::exists(dir + "/stop")) break;
         int ver = -1;
@@ -439,7 +440,33 @@ static int actor(const char* rom, int id, int n_actors, const std::string& level
         else if (secs_since(t_last) > 300) { std::printf("no new weights for 300s -> exiting\n"); break; }
         if (have_ver < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
 
-        Env& env = envs[ep % envs.size()];
+        // Stages the EMA net does not clear yet get 3x the practice: read the
+        // evaluator's latest line every 20 episodes ("1-2:2994" vs "1-2:3161W").
+        if (ep % 20 == id % 20) {
+            std::string last;
+            if (FILE* f = std::fopen((dir + "/eval.log").c_str(), "r")) {
+                char buf[2048];
+                while (std::fgets(buf, sizeof buf, f)) last = buf;
+                std::fclose(f);
+            }
+            for (size_t i = 0; i < levels.size(); ++i) {
+                std::string key = " " + levels[i].name() + ":";
+                size_t at = last.find(key);
+                bool cleared = false;
+                if (at != std::string::npos) {
+                    size_t end = last.find(' ', at + 1);
+                    std::string tok = last.substr(at + 1, end == std::string::npos ? std::string::npos : end - at - 1);
+                    cleared = !tok.empty() && tok.back() == 'W';
+                }
+                weight[i] = cleared ? 1.f : 3.f;
+            }
+        }
+        float wsum = 0;
+        for (float w : weight) wsum += w;
+        float pick = ag::randf() * wsum;
+        size_t li = 0;
+        while (li + 1 < envs.size() && pick >= weight[li]) { pick -= weight[li]; ++li; }
+        Env& env = envs[li];
         Episode e; e.S = S; e.actor = id;
         std::vector<float> s;
         if (env.num_checkpoints() > 0 && ag::randf() < 0.5f) {
